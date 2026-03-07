@@ -1,3 +1,4 @@
+import argparse
 import hmac
 import hashlib
 import os
@@ -10,17 +11,31 @@ REQ_VERSION = 1
 CMD_SIGN = 1
 DOMAIN_SUDO = 1
 
-# Demo secret
-#MASTER_SECRET = bytes([
-#    0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23,
-#    0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43,
-#    0x50, 0x51, 0x52, 0x53, 0x60, 0x61, 0x62, 0x63,
-#    0x70, 0x71, 0x72, 0x73, 0x80, 0x81, 0x82, 0x83
-#])
-# New provisioned secret Pico 1
-#MASTER_SECRET = bytes.fromhex("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
-# Pico board 2 Waveshare
-MASTER_SECRET = bytes.fromhex("8899aabbccddeeff00112233445566778899aabbccddeeff0011223344556677")
+DEFAULT_MASTER_SECRET = bytes([
+    0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23,
+    0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43,
+    0x50, 0x51, 0x52, 0x53, 0x60, 0x61, 0x62, 0x63,
+    0x70, 0x71, 0x72, 0x73, 0x80, 0x81, 0x82, 0x83
+])
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Send sign command to RP2350 token and verify returned MAC."
+    )
+    parser.add_argument(
+        "--secret-hex",
+        default=None,
+        help="32-byte master secret in hex (64 hex chars). Defaults to built-in demo secret.",
+    )
+    return parser.parse_args()
+
+def get_master_secret(secret_hex: str | None) -> bytes:
+    if secret_hex is None:
+        return DEFAULT_MASTER_SECRET
+    secret = bytes.fromhex(secret_hex)
+    if len(secret) != 32:
+        raise SystemExit("secret must be exactly 32 bytes (64 hex chars)")
+    return secret
 
 def hkdf_sha256(ikm: bytes, salt: bytes, info: bytes, out_len: int) -> bytes:
     """RFC5869 HKDF-SHA256 used to mirror firmware-side key derivation."""
@@ -40,6 +55,9 @@ def derive_device_root_key(master_secret: bytes, uid_bytes: bytes) -> bytes:
 def derive_domain_key(root_key: bytes, domain: int) -> bytes:
     label = b"rp2350-token-domain:\x00" + bytes([domain])
     return hmac.new(root_key, label, hashlib.sha256).digest()
+
+args = parse_args()
+master_secret = get_master_secret(args.secret_hex)
 
 print("Enumerating devices:")
 selected = None
@@ -61,7 +79,7 @@ try:
 except ValueError as exc:
     raise SystemExit(f"serial_number is not hex ({serial!r})") from exc
 
-device_root_key = derive_device_root_key(MASTER_SECRET, uid_bytes)
+device_root_key = derive_device_root_key(master_secret, uid_bytes)
 print("serial    :", serial)
 
 challenge = os.urandom(32)

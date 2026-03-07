@@ -9,7 +9,7 @@ USB HID security token prototype for RP2350.
 - mbedTLS-backed HKDF per-device root key derivation
 - Per-domain key derivation from per-device root key
 - BOOTSEL user-presence approval
-- 3-second approval window
+- Configurable approval window (default 3 seconds)
 - WS2812 LED state feedback
 - Monotonic counter included in signed payload with flash checkpoint batching
 - Device UID exposed as USB serial for deterministic host-side verification
@@ -59,7 +59,7 @@ RP2350 HID Token
    +-- LED state machine
    +-- UID-based root key derivation (HKDF)
    +-- Per-domain key derivation
-  +-- HMAC-SHA256 (mbedTLS)
+   +-- HMAC-SHA256 (mbedTLS)
    +-- Monotonic runtime counter
    +-- Dual-slot flash state (counter checkpoint + provisioned secret)
    +-- GET_STATE diagnostics command
@@ -75,6 +75,20 @@ RP2350 HID Token
 - `get_state_hid.py`: queries `CMD_GET_STATE=3` and prints counters/checkpoint/generation/UID.
 - `regression_hid.py`: automated sign/provision/sign regression flow.
 
+## Status codes
+
+Firmware responses use these status values:
+
+- `0`: success
+- `1`: bad protocol version
+- `2`: bad command
+- `3`: bad domain
+- `4`: user presence required or approval timeout
+- `5`: crypto or state persistence error
+- `6`: bad payload
+
+If you see `status: 4` in `test_hid.py`, run the command again and press `BOOTSEL` within the configured approval window (default `3000` ms).
+
 ## Build and flash
 
 ```bash
@@ -87,6 +101,14 @@ Optional flash-wear tuning:
 ```bash
 cmake -S . -B build_beta -DCOUNTER_FLUSH_INTERVAL=64
 ```
+
+Optional approval-window tuning:
+
+```bash
+cmake -S . -B build_beta -DAPPROVAL_TIMEOUT_MS=5000
+```
+
+That example changes the BOOTSEL approval timeout from the default `3000` ms to `5000` ms.
 
 If the board is in BOOTSEL mode and mounted as a USB mass-storage device:
 
@@ -110,14 +132,27 @@ Expected: `status : 0` and `match : True`.
 sudo python3 provision_hid.py --secret-hex 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
 ```
 
-3. Update one line in `test_hid.py`:
-```python
-MASTER_SECRET = bytes.fromhex("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
+Simplest way to generate a fresh 32-byte hex secret:
+
+```bash
+openssl rand -hex 32
 ```
 
-4. Re-run sign test:
+Or provision directly with a newly generated secret:
+
 ```bash
-sudo python3 test_hid.py
+python3 provision_hid.py --secret-hex "$(openssl rand -hex 32)"
+```
+
+If `openssl` is unavailable:
+
+```bash
+python3 -c 'import secrets; print(secrets.token_hex(32))'
+```
+
+3. Re-run sign test with the same secret:
+```bash
+sudo python3 test_hid.py --secret-hex 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
 ```
 Expected: `status : 0` and `match : True`.
 

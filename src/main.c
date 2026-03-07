@@ -125,6 +125,10 @@ static uint32_t runtime_counter = 0;
 #define COUNTER_FLUSH_INTERVAL 64u
 #endif
 
+#ifndef APPROVAL_TIMEOUT_MS
+#define APPROVAL_TIMEOUT_MS 3000u
+#endif
+
 static uint32_t crc32_update(uint32_t crc, uint8_t byte) {
     crc ^= byte;
     for (int i = 0; i < 8; ++i) {
@@ -421,7 +425,7 @@ static void handle_sign(uint8_t tx[64], uint8_t version, uint8_t domain) {
         return;
     }
 
-    if (!wait_for_user_presence(3000)) {
+    if (!wait_for_user_presence(APPROVAL_TIMEOUT_MS)) {
         tx[1] = STATUS_USER_PRESENCE_REQUIRED;
 
         // Yellow flash = denied / timeout.
@@ -477,7 +481,7 @@ static void handle_provision(uint8_t tx[64]) {
         return;
     }
 
-    if (!wait_for_user_presence(3000)) {
+    if (!wait_for_user_presence(APPROVAL_TIMEOUT_MS)) {
         tx[1] = STATUS_USER_PRESENCE_REQUIRED;
         led_set_rgb(32, 32, 0);
         sleep_ms(120);
