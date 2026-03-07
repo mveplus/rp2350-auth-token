@@ -169,7 +169,11 @@ Release build with RP2350 signing enabled:
 ```bash
 cmake -S . -B build_release \
   -DRELEASE_BUILD=ON \
-  -DRELEASE_SIGNING_KEY=$PWD/keys/release-private.pem
+  -DRELEASE_SIGNING_KEY=$PWD/keys/release-private.pem \
+  -DRELEASE_VERSION_MAJOR=1 \
+  -DRELEASE_VERSION_MINOR=0 \
+  -DRELEASE_ROLLBACK_VERSION=1 \
+  -DRELEASE_ROLLBACK_ROWS="100;103"
 cmake --build build_release -j
 ```
 
@@ -177,6 +181,15 @@ Expected additional release outputs:
 
 - signed release image artifacts
 - `rp2350_token.otp.json` unless overridden with `-DRELEASE_OTP_JSON=...`
+
+Release build policy:
+
+- `RELEASE_VERSION_MAJOR` and `RELEASE_VERSION_MINOR` identify the signed firmware version.
+- `RELEASE_ROLLBACK_VERSION` is the anti-rollback floor carried in the signed metadata.
+- `RELEASE_ROLLBACK_ROWS` selects the OTP rows used to store rollback state on device.
+- RP2350 rollback rows must satisfy the hardware/tooling spacing rules. For `RBIT3`, rows must be three apart, for example `100;103`.
+- Every real release must monotonically increase the secure-boot version.
+- Do not reuse rollback rows for unrelated products or experiments.
 
 If the board is in BOOTSEL mode and mounted as a USB mass-storage device:
 

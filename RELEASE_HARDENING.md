@@ -178,6 +178,25 @@ Acceptance:
 - release artifacts have explicit secure-boot versioning
 - field update instructions reject downgrade-by-process
 
+Implementation in this repo:
+
+- `RELEASE_VERSION_MAJOR`
+- `RELEASE_VERSION_MINOR`
+- `RELEASE_ROLLBACK_VERSION`
+- `RELEASE_ROLLBACK_ROWS`
+
+Recommended version policy:
+
+- increment `RELEASE_VERSION_MINOR` for normal compatible releases
+- increment `RELEASE_VERSION_MAJOR` for intentionally incompatible release lines
+- set `RELEASE_ROLLBACK_VERSION` to a monotonic floor that never decreases on fielded devices
+- keep `RELEASE_ROLLBACK_ROWS` fixed for this product line once deployed
+- choose rollback rows that satisfy the RP2350/picotool row-spacing rules; for `RBIT3`, a valid example is `100;103`
+
+Operational rule:
+
+- if a signed build has a lower rollback floor than the device expects, it must be treated as non-deployable even if the signature is valid
+
 ### Phase 3: Provision-after-secure-boot workflow
 
 Goal:
@@ -211,7 +230,11 @@ Example release build shape:
 ```bash
 cmake -S . -B build_release \
   -DRELEASE_BUILD=ON \
-  -DRELEASE_SIGNING_KEY=$PWD/keys/release-private.pem
+  -DRELEASE_SIGNING_KEY=$PWD/keys/release-private.pem \
+  -DRELEASE_VERSION_MAJOR=1 \
+  -DRELEASE_VERSION_MINOR=0 \
+  -DRELEASE_ROLLBACK_VERSION=1 \
+  -DRELEASE_ROLLBACK_ROWS="100;103"
 cmake --build build_release -j
 ```
 
@@ -225,6 +248,16 @@ Per-device secure-boot enable step:
 ```bash
 picotool otp load build_release/rp2350_token.otp.json
 ```
+
+Suggested release operator flow:
+
+1. choose the next release major/minor and rollback floor
+2. build the signed release image with those values
+3. verify the generated OTP JSON matches the intended key and rollback rows
+4. flash the signed image to a sacrificial device
+5. program OTP on that device
+6. verify boot succeeds and older release images are no longer acceptable by policy
+7. only then use the same release settings for field devices
 
 Important:
 
