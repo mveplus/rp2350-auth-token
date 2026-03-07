@@ -28,6 +28,32 @@ USB HID security token prototype for RP2350.
 - Tradeoff: abrupt power loss can roll back up to `COUNTER_FLUSH_INTERVAL - 1` unsaved counter steps.
 - Factory reset wipes the provisioned secret and counter state.
 
+## Threat model
+
+This token is designed for local `sudo` / `ssh` / `luks` style approval flows where a human is present and presses `BOOTSEL` to approve each sensitive action.
+
+Protected against:
+
+- Remote attackers who do not have the token.
+- Replay of previously observed signed responses outside the persisted counter guarantees.
+- Host-side confusion between two different boards, because each board derives keys from its own UID.
+- Accidental reprovisioning during normal use, because reprovisioning is locked until wipe.
+
+Not protected against:
+
+- Physical attackers who can read flash and extract the provisioned secret.
+- Attackers who can reflash firmware, unless you add a secure boot or firmware authenticity story.
+- Side-channel or fault-injection extraction.
+- Social engineering where a user is tricked into pressing `BOOTSEL` for the wrong action.
+- Power-loss rollback inside the unsaved checkpoint window when running in `beta` security mode.
+- A fully compromised host that can steer requests and UI timing, subject only to the BOOTSEL presence check.
+
+Design assumptions:
+
+- The host may be curious or partially untrusted, but cannot forge approvals without the token and user presence.
+- The user can physically see and press the token during approval and wipe flows.
+- Physical invasive extraction is out of scope for this design stage.
+
 ## LED compatibility
 
 The firmware drives WS2812 on both a primary and compatibility pin in one image:
