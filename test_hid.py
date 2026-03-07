@@ -11,27 +11,18 @@ REQ_VERSION = 1
 CMD_SIGN = 1
 DOMAIN_SUDO = 1
 
-DEFAULT_MASTER_SECRET = bytes([
-    0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23,
-    0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43,
-    0x50, 0x51, 0x52, 0x53, 0x60, 0x61, 0x62, 0x63,
-    0x70, 0x71, 0x72, 0x73, 0x80, 0x81, 0x82, 0x83
-])
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Send sign command to RP2350 token and verify returned MAC."
     )
     parser.add_argument(
         "--secret-hex",
-        default=None,
-        help="32-byte master secret in hex (64 hex chars). Defaults to built-in demo secret.",
+        required=True,
+        help="32-byte master secret in hex (64 hex chars).",
     )
     return parser.parse_args()
 
-def get_master_secret(secret_hex: str | None) -> bytes:
-    if secret_hex is None:
-        return DEFAULT_MASTER_SECRET
+def get_master_secret(secret_hex: str) -> bytes:
     secret = bytes.fromhex(secret_hex)
     if len(secret) != 32:
         raise SystemExit("secret must be exactly 32 bytes (64 hex chars)")

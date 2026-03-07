@@ -53,15 +53,6 @@ static uint8_t rx_buf[64];
 static volatile uint16_t rx_len = 0;
 static volatile bool packet_received = false;
 
-// Demo provisioning secret. In production, inject this during provisioning
-// and never keep it in source control.
-static const uint8_t demo_master_secret[32] = {
-    0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23,
-    0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43,
-    0x50, 0x51, 0x52, 0x53, 0x60, 0x61, 0x62, 0x63,
-    0x70, 0x71, 0x72, 0x73, 0x80, 0x81, 0x82, 0x83
-};
-
 static uint8_t device_root_key[32];
 static uint8_t active_master_secret[32];
 static pico_unique_board_id_t device_uid;
@@ -88,12 +79,18 @@ enum {
     STATUS_USER_PRESENCE_REQUIRED = 4,
     STATUS_CRYPTO_ERROR = 5,
     STATUS_BAD_PAYLOAD = 6,
+    STATUS_NOT_PROVISIONED = 7,
 };
 
 static PIO ws2812_pio = pio0;
 static int ws2812_sm_primary = 0;
 static int ws2812_sm_secondary = 1;
 static bool ws2812_secondary_enabled = false;
+
+static void recompute_device_root_key(void);
+static void select_active_master_secret(void);
+static void led_set_rgb(uint8_t r, uint8_t g, uint8_t b);
+bool __no_inline_not_in_flash_func(get_bootsel_button_local)(void);
 
 // ----------------------------------------------------------------------------
 // Persistent token state (dual-slot flash journal)
@@ -127,6 +124,10 @@ static uint32_t runtime_counter = 0;
 
 #ifndef APPROVAL_TIMEOUT_MS
 #define APPROVAL_TIMEOUT_MS 3000u
+#endif
+
+#ifndef WIPE_HOLD_MS
+#define WIPE_HOLD_MS 20000u
 #endif
 
 static uint32_t crc32_update(uint32_t crc, uint8_t byte) {
@@ -176,11 +177,31 @@ static bool write_state_slot(int slot, const token_state_t *state) {
     return read_state_slot(slot, &verify);
 }
 
+static void reset_token_state_in_ram(void) {
+    memset(&token_state, 0, sizeof(token_state));
+    token_state.magic = TOKEN_STATE_MAGIC;
+    token_state.version = TOKEN_STATE_VERSION;
+    active_state_slot = -1;
+    runtime_counter = 0;
+    select_active_master_secret();
+    recompute_device_root_key();
+}
+
+static bool wipe_token_state_flash(void) {
+    uint32_t flags = save_and_disable_interrupts();
+    flash_range_erase(TOKEN_STATE_SLOT_A_OFFSET, 2 * FLASH_SECTOR_SIZE);
+    restore_interrupts(flags);
+
+    reset_token_state_in_ram();
+    token_state_t verify = {0};
+    return !read_state_slot(0, &verify) && !read_state_slot(1, &verify);
+}
+
 static void select_active_master_secret(void) {
     if (token_state.flags & TOKEN_FLAG_MASTER_SECRET_SET) {
         memcpy(active_master_secret, token_state.provisioned_master_secret, sizeof(active_master_secret));
     } else {
-        memcpy(active_master_secret, demo_master_secret, sizeof(active_master_secret));
+        memset(active_master_secret, 0, sizeof(active_master_secret));
     }
 }
 
@@ -244,6 +265,12 @@ static bool persist_token_state(uint32_t new_counter,
 }
 
 static void recompute_device_root_key(void) {
+    if (!(token_state.flags & TOKEN_FLAG_MASTER_SECRET_SET)) {
+        memset(device_root_key, 0, sizeof(device_root_key));
+        crypto_ready = false;
+        return;
+    }
+
     // Device key is deterministic for this board UID and currently selected master secret.
     crypto_ready = derive_device_root_key(active_master_secret, sizeof(active_master_secret),
                                           device_uid.id, sizeof(device_uid.id),
@@ -260,6 +287,66 @@ static bool flush_counter_checkpoint_if_needed(uint32_t next_counter) {
     }
 
     return persist_token_state(next_counter, NULL, false);
+}
+
+static void service_factory_reset_request(void) {
+#if WIPE_HOLD_MS > 0
+    static bool hold_active = false;
+    static absolute_time_t hold_started_at;
+    static absolute_time_t last_blink = 0;
+    static bool blink_on = false;
+
+    if (!get_bootsel_button_local()) {
+        if (hold_active) {
+            hold_active = false;
+            blink_on = false;
+            led_set_rgb(0, 0, 0);
+        }
+        return;
+    }
+
+    if (!hold_active) {
+        hold_active = true;
+        hold_started_at = get_absolute_time();
+        last_blink = hold_started_at;
+        blink_on = true;
+        led_set_rgb(32, 32, 32);
+        return;
+    }
+
+    if (absolute_time_diff_us(last_blink, get_absolute_time()) >= 150000) {
+        last_blink = get_absolute_time();
+        blink_on = !blink_on;
+        led_set_rgb(blink_on ? 32 : 0, blink_on ? 32 : 0, blink_on ? 32 : 0);
+    }
+
+    if (absolute_time_diff_us(hold_started_at, get_absolute_time()) < ((int64_t)WIPE_HOLD_MS * 1000)) {
+        return;
+    }
+
+    hold_active = false;
+    blink_on = false;
+
+    if (wipe_token_state_flash()) {
+        // Red flashes indicate the wipe completed.
+        for (int i = 0; i < 3; ++i) {
+            led_set_rgb(32, 0, 0);
+            sleep_ms(120);
+            led_set_rgb(0, 0, 0);
+            sleep_ms(120);
+        }
+    } else {
+        // Yellow indicates wipe failure.
+        led_set_rgb(32, 32, 0);
+        sleep_ms(400);
+        led_set_rgb(0, 0, 0);
+    }
+
+    while (get_bootsel_button_local()) {
+        tud_task();
+        sleep_ms(20);
+    }
+#endif
 }
 
 // ----------------------------------------------------------------------------
@@ -421,7 +508,7 @@ static void handle_sign(uint8_t tx[64], uint8_t version, uint8_t domain) {
     }
 
     if (!crypto_ready) {
-        tx[1] = STATUS_CRYPTO_ERROR;
+        tx[1] = STATUS_NOT_PROVISIONED;
         return;
     }
 
@@ -575,12 +662,12 @@ static void process_packet(uint8_t tx[64]) {
 // ----------------------------------------------------------------------------
 int main(void) {
     board_init();
-    tusb_init();
     ws2812_init_led();
 
     pico_get_unique_board_id(&device_uid);
     load_token_state();
     recompute_device_root_key();
+    tusb_init();
 
     absolute_time_t last_blink = get_absolute_time();
     bool blink_on = false;
@@ -588,17 +675,26 @@ int main(void) {
     while (1) {
         tud_task();
 
-        // Only show idle green blink when no packet is being processed
+        // Idle status blink when no packet is being processed:
+        // green = ready, white = unprovisioned.
         if (!packet_received &&
             absolute_time_diff_us(last_blink, get_absolute_time()) >= 250000) {
             last_blink = get_absolute_time();
             blink_on = !blink_on;
 
             if (blink_on) {
-                led_set_rgb(0, 32, 0);
+                if (crypto_ready) {
+                    led_set_rgb(0, 32, 0);
+                } else {
+                    led_set_rgb(32, 32, 32);
+                }
             } else {
                 led_set_rgb(0, 0, 0);
             }
+        }
+
+        if (!packet_received) {
+            service_factory_reset_request();
         }
 
         if (packet_received && tud_hid_ready()) {

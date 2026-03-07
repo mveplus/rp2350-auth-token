@@ -14,9 +14,6 @@ CMD_PROVISION = 2
 CMD_GET_STATE = 3
 DOMAIN_SUDO = 1
 
-DEMO_SECRET_HEX = "1011121320212223303132334041424350515253606162637071727380818283"
-
-
 def hkdf_sha256(ikm: bytes, salt: bytes, info: bytes, out_len: int) -> bytes:
     prk = hmac.new(salt, ikm, hashlib.sha256).digest()
     okm = b""
@@ -121,8 +118,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run host regression checks against RP2350 token.")
     parser.add_argument(
         "--initial-secret-hex",
-        default=DEMO_SECRET_HEX,
-        help="Secret currently active before test starts (default: demo secret).",
+        required=True,
+        help="Secret currently active before test starts.",
     )
     parser.add_argument(
         "--new-secret-hex",
