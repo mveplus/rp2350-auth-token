@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Build outputs
+build/
+build_*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Pico/firmware artifacts
+*.uf2
+*.bin
+*.hex
+*.elf
+*.elf.map
+*.dis
+
+# Editors/OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

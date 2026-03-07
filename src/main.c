@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -7,32 +8,69 @@
 #include "crypto.h"
 
 #include "pico/stdlib.h"
+#include "pico/unique_id.h"
+#include "hardware/flash.h"
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/sync.h"
+#include "hardware/regs/addressmap.h"
 #include "hardware/structs/ioqspi.h"
 #include "hardware/structs/sio.h"
 
 #include "ws2812.pio.h"
 
-#define WS2812_PIN 22
 #define IS_RGBW false
 
+// LED pin strategy:
+// - Primary pin: board default WS2812 pin when available, else legacy pin 22.
+// - Secondary pin: optional compatibility pin 16 for Waveshare RP2350 Zero family.
+// This lets one firmware image drive either board's RGB LED.
+#ifndef WS2812_PIN_PRIMARY
+#if defined(PICO_DEFAULT_WS2812_PIN)
+#define WS2812_PIN_PRIMARY PICO_DEFAULT_WS2812_PIN
+#else
+#define WS2812_PIN_PRIMARY 22
+#endif
+#endif
+
+#ifndef WS2812_PIN_SECONDARY
+#define WS2812_PIN_SECONDARY 16
+#endif
+
+// Channel order per output pin:
+// 1 = GRB (most common WS2812 order), 0 = RGB.
+// Tenstar board on GPIO22 expects GRB; Waveshare Zero on GPIO16 reports RGB.
+#ifndef WS2812_PRIMARY_IS_GRB
+#define WS2812_PRIMARY_IS_GRB 1
+#endif
+
+#ifndef WS2812_SECONDARY_IS_GRB
+#define WS2812_SECONDARY_IS_GRB 0
+#endif
+
 static uint8_t rx_buf[64];
+static volatile uint16_t rx_len = 0;
 static volatile bool packet_received = false;
 
-// TEST ONLY - replace later with provisioned secret in flash
-static const uint8_t root_key[32] = {
+// Demo provisioning secret. In production, inject this during provisioning
+// and never keep it in source control.
+static const uint8_t demo_master_secret[32] = {
     0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23,
     0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43,
     0x50, 0x51, 0x52, 0x53, 0x60, 0x61, 0x62, 0x63,
     0x70, 0x71, 0x72, 0x73, 0x80, 0x81, 0x82, 0x83
 };
 
+static uint8_t device_root_key[32];
+static uint8_t active_master_secret[32];
+static pico_unique_board_id_t device_uid;
+static bool crypto_ready = false;
+
 enum {
     REQ_VERSION = 1,
     CMD_SIGN = 1,
+    CMD_PROVISION = 2,
 };
 
 enum {
@@ -47,21 +85,175 @@ enum {
     STATUS_BAD_COMMAND = 2,
     STATUS_BAD_DOMAIN  = 3,
     STATUS_USER_PRESENCE_REQUIRED = 4,
+    STATUS_CRYPTO_ERROR = 5,
+    STATUS_BAD_PAYLOAD = 6,
 };
 
 static PIO ws2812_pio = pio0;
-static int ws2812_sm = 0;
+static int ws2812_sm_primary = 0;
+static int ws2812_sm_secondary = 1;
+static bool ws2812_secondary_enabled = false;
+
+// ----------------------------------------------------------------------------
+// Persistent token state (dual-slot flash journal)
+// ----------------------------------------------------------------------------
+
+#define TOKEN_STATE_MAGIC             0x314e4b54u // "TKN1"
+#define TOKEN_STATE_VERSION           1u
+#define TOKEN_FLAG_MASTER_SECRET_SET  0x0001u
+
+#define TOKEN_STATE_SLOT_A_OFFSET (PICO_FLASH_SIZE_BYTES - (2 * FLASH_SECTOR_SIZE))
+#define TOKEN_STATE_SLOT_B_OFFSET (PICO_FLASH_SIZE_BYTES - (1 * FLASH_SECTOR_SIZE))
+
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t flags;
+    uint32_t generation;
+    uint32_t counter;
+    uint8_t provisioned_master_secret[32];
+    uint32_t crc32;
+} token_state_t;
+
+static token_state_t token_state;
+static int active_state_slot = -1;
+
+static uint32_t crc32_update(uint32_t crc, uint8_t byte) {
+    crc ^= byte;
+    for (int i = 0; i < 8; ++i) {
+        crc = (crc & 1u) ? ((crc >> 1) ^ 0xedb88320u) : (crc >> 1);
+    }
+    return crc;
+}
+
+static uint32_t crc32_compute(const void *data, size_t len) {
+    const uint8_t *p = (const uint8_t *)data;
+    uint32_t crc = 0xffffffffu;
+    for (size_t i = 0; i < len; ++i) {
+        crc = crc32_update(crc, p[i]);
+    }
+    return ~crc;
+}
+
+static bool token_state_is_valid(const token_state_t *state) {
+    if (state->magic != TOKEN_STATE_MAGIC || state->version != TOKEN_STATE_VERSION) {
+        return false;
+    }
+    uint32_t expected = crc32_compute(state, offsetof(token_state_t, crc32));
+    return expected == state->crc32;
+}
+
+static bool read_state_slot(int slot, token_state_t *out) {
+    uint32_t offset = (slot == 0) ? TOKEN_STATE_SLOT_A_OFFSET : TOKEN_STATE_SLOT_B_OFFSET;
+    const uint8_t *flash_ptr = (const uint8_t *)(XIP_BASE + offset);
+    memcpy(out, flash_ptr, sizeof(*out));
+    return token_state_is_valid(out);
+}
+
+static bool write_state_slot(int slot, const token_state_t *state) {
+    uint32_t offset = (slot == 0) ? TOKEN_STATE_SLOT_A_OFFSET : TOKEN_STATE_SLOT_B_OFFSET;
+    uint8_t page[FLASH_PAGE_SIZE];
+    memset(page, 0xff, sizeof(page));
+    memcpy(page, state, sizeof(*state));
+
+    uint32_t flags = save_and_disable_interrupts();
+    flash_range_erase(offset, FLASH_SECTOR_SIZE);
+    flash_range_program(offset, page, FLASH_PAGE_SIZE);
+    restore_interrupts(flags);
+
+    token_state_t verify;
+    return read_state_slot(slot, &verify);
+}
+
+static void select_active_master_secret(void) {
+    if (token_state.flags & TOKEN_FLAG_MASTER_SECRET_SET) {
+        memcpy(active_master_secret, token_state.provisioned_master_secret, sizeof(active_master_secret));
+    } else {
+        memcpy(active_master_secret, demo_master_secret, sizeof(active_master_secret));
+    }
+}
+
+static void load_token_state(void) {
+    token_state_t slot_a = {0};
+    token_state_t slot_b = {0};
+    bool a_valid = read_state_slot(0, &slot_a);
+    bool b_valid = read_state_slot(1, &slot_b);
+
+    if (a_valid && b_valid) {
+        if (slot_b.generation > slot_a.generation) {
+            token_state = slot_b;
+            active_state_slot = 1;
+        } else {
+            token_state = slot_a;
+            active_state_slot = 0;
+        }
+    } else if (a_valid) {
+        token_state = slot_a;
+        active_state_slot = 0;
+    } else if (b_valid) {
+        token_state = slot_b;
+        active_state_slot = 1;
+    } else {
+        memset(&token_state, 0, sizeof(token_state));
+        token_state.magic = TOKEN_STATE_MAGIC;
+        token_state.version = TOKEN_STATE_VERSION;
+        active_state_slot = -1;
+    }
+
+    select_active_master_secret();
+}
+
+static bool persist_token_state(uint32_t new_counter,
+                                const uint8_t *new_master_secret,
+                                bool set_master_secret) {
+    token_state_t next = token_state;
+
+    next.magic = TOKEN_STATE_MAGIC;
+    next.version = TOKEN_STATE_VERSION;
+    next.generation = token_state.generation + 1;
+    next.counter = new_counter;
+
+    if (set_master_secret && new_master_secret) {
+        memcpy(next.provisioned_master_secret, new_master_secret, sizeof(next.provisioned_master_secret));
+        next.flags |= TOKEN_FLAG_MASTER_SECRET_SET;
+    }
+
+    next.crc32 = crc32_compute(&next, offsetof(token_state_t, crc32));
+
+    int target_slot = (active_state_slot == 0) ? 1 : 0;
+    if (!write_state_slot(target_slot, &next)) {
+        return false;
+    }
+
+    token_state = next;
+    active_state_slot = target_slot;
+    select_active_master_secret();
+    return true;
+}
+
+static void recompute_device_root_key(void) {
+    // Device key is deterministic for this board UID and currently selected master secret.
+    crypto_ready = derive_device_root_key(active_master_secret, sizeof(active_master_secret),
+                                          device_uid.id, sizeof(device_uid.id),
+                                          device_root_key);
+}
 
 // ----------------------------------------------------------------------------
 // WS2812 helpers
 // ----------------------------------------------------------------------------
 
-static inline void put_pixel(uint32_t pixel_grb) {
-    pio_sm_put_blocking(ws2812_pio, ws2812_sm, pixel_grb << 8u);
+static inline uint32_t pack_color(uint8_t r, uint8_t g, uint8_t b, bool is_grb) {
+    if (is_grb) {
+        return ((uint32_t)g << 16) | ((uint32_t)r << 8) | (uint32_t)b;
+    }
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 
-static inline uint32_t urgb_u32(uint8_t r, uint8_t g, uint8_t b) {
-    return ((uint32_t)g << 16) | ((uint32_t)r << 8) | (uint32_t)b;
+static inline void put_pixel(uint32_t pixel_primary, uint32_t pixel_secondary) {
+    pio_sm_put_blocking(ws2812_pio, ws2812_sm_primary, pixel_primary << 8u);
+    if (ws2812_secondary_enabled) {
+        pio_sm_put_blocking(ws2812_pio, ws2812_sm_secondary, pixel_secondary << 8u);
+    }
 }
 
 static inline void ws2812_program_init_local(PIO pio, uint sm, uint offset, uint pin, float freq, bool rgbw) {
@@ -83,11 +275,19 @@ static inline void ws2812_program_init_local(PIO pio, uint sm, uint offset, uint
 
 static void ws2812_init_led(void) {
     uint offset = pio_add_program(ws2812_pio, &ws2812_program);
-    ws2812_program_init_local(ws2812_pio, ws2812_sm, offset, WS2812_PIN, 800000, IS_RGBW);
+    ws2812_program_init_local(ws2812_pio, ws2812_sm_primary, offset, WS2812_PIN_PRIMARY, 800000, IS_RGBW);
+
+    // Optional second output for boards that wire WS2812 to a different GPIO.
+    if (WS2812_PIN_SECONDARY != WS2812_PIN_PRIMARY) {
+        ws2812_program_init_local(ws2812_pio, ws2812_sm_secondary, offset, WS2812_PIN_SECONDARY, 800000, IS_RGBW);
+        ws2812_secondary_enabled = true;
+    }
 }
 
 static void led_set_rgb(uint8_t r, uint8_t g, uint8_t b) {
-    put_pixel(urgb_u32(r, g, b));
+    uint32_t p0 = pack_color(r, g, b, WS2812_PRIMARY_IS_GRB != 0);
+    uint32_t p1 = pack_color(r, g, b, WS2812_SECONDARY_IS_GRB != 0);
+    put_pixel(p0, p1);
 }
 
 // ----------------------------------------------------------------------------
@@ -154,12 +354,137 @@ void tud_hid_set_report_cb(uint8_t instance,
     memset(rx_buf, 0, sizeof(rx_buf));
     if (bufsize > sizeof(rx_buf)) bufsize = sizeof(rx_buf);
     memcpy(rx_buf, buffer, bufsize);
+    rx_len = bufsize;
     packet_received = true;
 }
 
 // ----------------------------------------------------------------------------
 // Token logic
 // ----------------------------------------------------------------------------
+
+static bool wait_for_user_presence(uint32_t timeout_ms) {
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+    bool blink_on = false;
+    absolute_time_t last_blink = get_absolute_time();
+
+    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        tud_task();
+
+        if (get_bootsel_button_local()) {
+            return true;
+        }
+
+        // Blue blink while waiting for approval.
+        if (absolute_time_diff_us(last_blink, get_absolute_time()) >= 150000) {
+            last_blink = get_absolute_time();
+            blink_on = !blink_on;
+            led_set_rgb(0, 0, blink_on ? 32 : 0);
+        }
+    }
+
+    return false;
+}
+
+static void handle_sign(uint8_t tx[64], uint8_t version, uint8_t domain) {
+    if (domain < DOMAIN_SUDO || domain > DOMAIN_LUKS) {
+        tx[1] = STATUS_BAD_DOMAIN;
+        return;
+    }
+
+    if (rx_len < 36) {
+        tx[1] = STATUS_BAD_PAYLOAD;
+        return;
+    }
+
+    if (!crypto_ready) {
+        tx[1] = STATUS_CRYPTO_ERROR;
+        return;
+    }
+
+    if (!wait_for_user_presence(3000)) {
+        tx[1] = STATUS_USER_PRESENCE_REQUIRED;
+
+        // Yellow flash = denied / timeout.
+        led_set_rgb(32, 32, 0);
+        sleep_ms(120);
+        led_set_rgb(0, 0, 0);
+        return;
+    }
+
+    // Red flash while approving.
+    led_set_rgb(32, 0, 0);
+    sleep_ms(80);
+
+    uint8_t domain_key[32];
+    // Signed payload layout: version(1) || domain(1) || counter(4) || challenge(32).
+    uint8_t msg[38];
+    uint8_t mac[32];
+
+    // Persist counter first, so power loss cannot roll back already-issued counters.
+    uint32_t next_counter = token_state.counter + 1;
+    if (!persist_token_state(next_counter, NULL, false)) {
+        tx[1] = STATUS_CRYPTO_ERROR;
+        return;
+    }
+    uint32_t counter = token_state.counter;
+
+    if (!derive_domain_key(device_root_key, domain, domain_key)) {
+        tx[1] = STATUS_CRYPTO_ERROR;
+        return;
+    }
+
+    msg[0] = version;
+    msg[1] = domain;
+    memcpy(&msg[2], &counter, sizeof(counter));
+    memcpy(&msg[6], &rx_buf[4], 32);
+
+    if (!hmac_sha256(domain_key, sizeof(domain_key), msg, sizeof(msg), mac)) {
+        tx[1] = STATUS_CRYPTO_ERROR;
+        return;
+    }
+    memcpy(&tx[4], mac, 32);
+    memcpy(&tx[36], &counter, sizeof(counter));
+
+    // White flash = success
+    led_set_rgb(32, 32, 32);
+    sleep_ms(120);
+    led_set_rgb(0, 0, 0);
+}
+
+static void handle_provision(uint8_t tx[64]) {
+    if (rx_len < 36) {
+        tx[1] = STATUS_BAD_PAYLOAD;
+        return;
+    }
+
+    if (!wait_for_user_presence(3000)) {
+        tx[1] = STATUS_USER_PRESENCE_REQUIRED;
+        led_set_rgb(32, 32, 0);
+        sleep_ms(120);
+        led_set_rgb(0, 0, 0);
+        return;
+    }
+
+    // Payload bytes [4..35] carry a replacement master secret.
+    uint8_t new_master_secret[32];
+    memcpy(new_master_secret, &rx_buf[4], sizeof(new_master_secret));
+
+    if (!persist_token_state(token_state.counter, new_master_secret, true)) {
+        tx[1] = STATUS_CRYPTO_ERROR;
+        return;
+    }
+
+    recompute_device_root_key();
+    if (!crypto_ready) {
+        tx[1] = STATUS_CRYPTO_ERROR;
+        return;
+    }
+
+    tx[4] = 1; // Provisioning applied.
+    led_set_rgb(32, 0, 32);
+    sleep_ms(120);
+    led_set_rgb(0, 0, 0);
+}
 
 static void process_packet(uint8_t tx[64]) {
     memset(tx, 0, 64);
@@ -179,74 +504,17 @@ static void process_packet(uint8_t tx[64]) {
         return;
     }
 
-    if (command != CMD_SIGN) {
-        tx[1] = STATUS_BAD_COMMAND;
-        return;
-    }
-
-    if (domain < DOMAIN_SUDO || domain > DOMAIN_LUKS) {
-        tx[1] = STATUS_BAD_DOMAIN;
-        return;
-    }
-
-    // Approval window: 3 seconds
-    absolute_time_t deadline = make_timeout_time_ms(3000);
-    bool approved = false;
-    bool blink_on = false;
-    absolute_time_t last_blink = get_absolute_time();
-
-    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
-        tud_task();
-
-        if (get_bootsel_button_local()) {
-            approved = true;
+    switch (command) {
+        case CMD_SIGN:
+            handle_sign(tx, version, domain);
             break;
-        }
-
-        // Blue blink while waiting for approval
-        if (absolute_time_diff_us(last_blink, get_absolute_time()) >= 150000) {
-            last_blink = get_absolute_time();
-            blink_on = !blink_on;
-
-            if (blink_on) {
-                led_set_rgb(0, 0, 32);
-            } else {
-                led_set_rgb(0, 0, 0);
-            }
-        }
+        case CMD_PROVISION:
+            handle_provision(tx);
+            break;
+        default:
+            tx[1] = STATUS_BAD_COMMAND;
+            break;
     }
-
-    if (!approved) {
-        tx[1] = STATUS_USER_PRESENCE_REQUIRED;
-
-        // Yellow flash = denied / timeout
-        led_set_rgb(32, 32, 0);
-        sleep_ms(120);
-        led_set_rgb(0, 0, 0);
-        return;
-    }
-
-    // Red flash while approving
-    led_set_rgb(32, 0, 0);
-    sleep_ms(80);
-
-    uint8_t domain_key[32];
-    uint8_t msg[34];
-    uint8_t mac[32];
-
-    derive_domain_key(root_key, domain, domain_key);
-
-    msg[0] = version;
-    msg[1] = domain;
-    memcpy(&msg[2], &rx_buf[4], 32);
-
-    hmac_sha256(domain_key, sizeof(domain_key), msg, sizeof(msg), mac);
-    memcpy(&tx[4], mac, 32);
-
-    // White flash = success
-    led_set_rgb(32, 32, 32);
-    sleep_ms(120);
-    led_set_rgb(0, 0, 0);
 }
 
 // ----------------------------------------------------------------------------
@@ -256,6 +524,10 @@ int main(void) {
     board_init();
     tusb_init();
     ws2812_init_led();
+
+    pico_get_unique_board_id(&device_uid);
+    load_token_state();
+    recompute_device_root_key();
 
     absolute_time_t last_blink = get_absolute_time();
     bool blink_on = false;

@@ -1,4 +1,5 @@
 #include "tusb.h"
+#include "pico/unique_id.h"
 
 // -----------------------------------------------------------------------------
 // Device descriptor
@@ -90,8 +91,8 @@ uint8_t const * tud_descriptor_configuration_cb(uint8_t index) {
 char const *string_desc_arr[] = {
     (const char[]) { 0x09, 0x04 },
     "Marto",
-    "RP2350 HID Token PoC",
-    "0001",
+    "RP2350 HID Token",
+    NULL,
 };
 
 static uint16_t _desc_str[32];
@@ -99,10 +100,19 @@ static uint16_t _desc_str[32];
 uint16_t const * tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     (void) langid;
     uint8_t chr_count;
+    char serial_ascii[PICO_UNIQUE_BOARD_ID_SIZE_BYTES * 2 + 1];
 
     if (index == 0) {
         _desc_str[1] = 0x0409;
         chr_count = 1;
+    } else if (index == 3) {
+        // Export hardware UID as serial so host tooling can identify the token.
+        pico_get_unique_board_id_string(serial_ascii, sizeof(serial_ascii));
+        chr_count = 0;
+        while (serial_ascii[chr_count] && chr_count < 31) {
+            _desc_str[1 + chr_count] = serial_ascii[chr_count];
+            chr_count++;
+        }
     } else {
         if (!(index < sizeof(string_desc_arr) / sizeof(string_desc_arr[0]))) {
             return NULL;

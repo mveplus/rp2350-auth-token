@@ -10,6 +10,12 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
+# Optional board-agnostic LED pin overrides for WS2812 output.
+set(WS2812_PIN_PRIMARY "" CACHE STRING "Primary WS2812 GPIO pin")
+set(WS2812_PIN_SECONDARY "" CACHE STRING "Secondary WS2812 GPIO pin")
+set(WS2812_PRIMARY_IS_GRB "" CACHE STRING "Primary WS2812 color order: 1=GRB, 0=RGB")
+set(WS2812_SECONDARY_IS_GRB "" CACHE STRING "Secondary WS2812 color order: 1=GRB, 0=RGB")
+
 add_executable(rp2350_token
     src/main.c
     src/usb_descriptors.c
@@ -20,6 +26,22 @@ target_include_directories(rp2350_token PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/src
 )
 
+if (NOT "${WS2812_PIN_PRIMARY}" STREQUAL "")
+    target_compile_definitions(rp2350_token PRIVATE WS2812_PIN_PRIMARY=${WS2812_PIN_PRIMARY})
+endif()
+
+if (NOT "${WS2812_PIN_SECONDARY}" STREQUAL "")
+    target_compile_definitions(rp2350_token PRIVATE WS2812_PIN_SECONDARY=${WS2812_PIN_SECONDARY})
+endif()
+
+if (NOT "${WS2812_PRIMARY_IS_GRB}" STREQUAL "")
+    target_compile_definitions(rp2350_token PRIVATE WS2812_PRIMARY_IS_GRB=${WS2812_PRIMARY_IS_GRB})
+endif()
+
+if (NOT "${WS2812_SECONDARY_IS_GRB}" STREQUAL "")
+    target_compile_definitions(rp2350_token PRIVATE WS2812_SECONDARY_IS_GRB=${WS2812_SECONDARY_IS_GRB})
+endif()
+
 pico_generate_pio_header(rp2350_token ${CMAKE_CURRENT_LIST_DIR}/src/ws2812.pio)
 
 target_link_libraries(rp2350_token
@@ -27,6 +49,8 @@ target_link_libraries(rp2350_token
     tinyusb_device
     tinyusb_board
     hardware_pio
+    pico_unique_id
+    pico_mbedtls
 )
 
 pico_enable_stdio_usb(rp2350_token 0)
