@@ -71,6 +71,7 @@ enum {
     REQ_VERSION = 1,
     CMD_SIGN = 1,
     CMD_PROVISION = 2,
+    CMD_GET_STATE = 3,
 };
 
 enum {
@@ -117,6 +118,12 @@ typedef struct {
 
 static token_state_t token_state;
 static int active_state_slot = -1;
+static uint32_t runtime_counter = 0;
+
+// Wear mitigation: checkpoint counter to flash every N signatures.
+#ifndef COUNTER_FLUSH_INTERVAL
+#define COUNTER_FLUSH_INTERVAL 64u
+#endif
 
 static uint32_t crc32_update(uint32_t crc, uint8_t byte) {
     crc ^= byte;
@@ -201,6 +208,7 @@ static void load_token_state(void) {
     }
 
     select_active_master_secret();
+    runtime_counter = token_state.counter;
 }
 
 static bool persist_token_state(uint32_t new_counter,
@@ -236,6 +244,18 @@ static void recompute_device_root_key(void) {
     crypto_ready = derive_device_root_key(active_master_secret, sizeof(active_master_secret),
                                           device_uid.id, sizeof(device_uid.id),
                                           device_root_key);
+}
+
+static bool flush_counter_checkpoint_if_needed(uint32_t next_counter) {
+    if (next_counter < token_state.counter) {
+        return false;
+    }
+
+    if ((next_counter - token_state.counter) < COUNTER_FLUSH_INTERVAL) {
+        return true;
+    }
+
+    return persist_token_state(next_counter, NULL, false);
 }
 
 // ----------------------------------------------------------------------------
@@ -420,13 +440,13 @@ static void handle_sign(uint8_t tx[64], uint8_t version, uint8_t domain) {
     uint8_t msg[38];
     uint8_t mac[32];
 
-    // Persist counter first, so power loss cannot roll back already-issued counters.
-    uint32_t next_counter = token_state.counter + 1;
-    if (!persist_token_state(next_counter, NULL, false)) {
+    uint32_t next_counter = runtime_counter + 1;
+    if (!flush_counter_checkpoint_if_needed(next_counter)) {
         tx[1] = STATUS_CRYPTO_ERROR;
         return;
     }
-    uint32_t counter = token_state.counter;
+    runtime_counter = next_counter;
+    uint32_t counter = runtime_counter;
 
     if (!derive_domain_key(device_root_key, domain, domain_key)) {
         tx[1] = STATUS_CRYPTO_ERROR;
@@ -469,7 +489,8 @@ static void handle_provision(uint8_t tx[64]) {
     uint8_t new_master_secret[32];
     memcpy(new_master_secret, &rx_buf[4], sizeof(new_master_secret));
 
-    if (!persist_token_state(token_state.counter, new_master_secret, true)) {
+    // Always checkpoint live counter before rotating master secret.
+    if (!persist_token_state(runtime_counter, new_master_secret, true)) {
         tx[1] = STATUS_CRYPTO_ERROR;
         return;
     }
@@ -484,6 +505,31 @@ static void handle_provision(uint8_t tx[64]) {
     led_set_rgb(32, 0, 32);
     sleep_ms(120);
     led_set_rgb(0, 0, 0);
+}
+
+static void handle_get_state(uint8_t tx[64]) {
+    // tx[4..] is a compact diagnostics payload for host tooling.
+    // [4]  protocol version
+    // [5]  counter flush interval
+    // [6]  flags: bit0 master secret provisioned, bit1 counter dirty in RAM
+    // [8:12]  runtime counter (live)
+    // [12:16] persisted counter checkpoint
+    // [16:20] state generation
+    // [20:28] device UID
+    tx[4] = REQ_VERSION;
+    tx[5] = (uint8_t)COUNTER_FLUSH_INTERVAL;
+    tx[6] = 0;
+    if (token_state.flags & TOKEN_FLAG_MASTER_SECRET_SET) {
+        tx[6] |= 0x01;
+    }
+    if (runtime_counter != token_state.counter) {
+        tx[6] |= 0x02;
+    }
+
+    memcpy(&tx[8], &runtime_counter, sizeof(runtime_counter));
+    memcpy(&tx[12], &token_state.counter, sizeof(token_state.counter));
+    memcpy(&tx[16], &token_state.generation, sizeof(token_state.generation));
+    memcpy(&tx[20], device_uid.id, sizeof(device_uid.id));
 }
 
 static void process_packet(uint8_t tx[64]) {
@@ -510,6 +556,9 @@ static void process_packet(uint8_t tx[64]) {
             break;
         case CMD_PROVISION:
             handle_provision(tx);
+            break;
+        case CMD_GET_STATE:
+            handle_get_state(tx);
             break;
         default:
             tx[1] = STATUS_BAD_COMMAND;

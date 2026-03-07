@@ -15,6 +15,7 @@ set(WS2812_PIN_PRIMARY "" CACHE STRING "Primary WS2812 GPIO pin")
 set(WS2812_PIN_SECONDARY "" CACHE STRING "Secondary WS2812 GPIO pin")
 set(WS2812_PRIMARY_IS_GRB "" CACHE STRING "Primary WS2812 color order: 1=GRB, 0=RGB")
 set(WS2812_SECONDARY_IS_GRB "" CACHE STRING "Secondary WS2812 color order: 1=GRB, 0=RGB")
+set(COUNTER_FLUSH_INTERVAL "" CACHE STRING "Persist counter every N signatures")
 
 add_executable(rp2350_token
     src/main.c
@@ -40,6 +41,10 @@ endif()
 
 if (NOT "${WS2812_SECONDARY_IS_GRB}" STREQUAL "")
     target_compile_definitions(rp2350_token PRIVATE WS2812_SECONDARY_IS_GRB=${WS2812_SECONDARY_IS_GRB})
+endif()
+
+if (NOT "${COUNTER_FLUSH_INTERVAL}" STREQUAL "")
+    target_compile_definitions(rp2350_token PRIVATE COUNTER_FLUSH_INTERVAL=${COUNTER_FLUSH_INTERVAL})
 endif()
 
 pico_generate_pio_header(rp2350_token ${CMAKE_CURRENT_LIST_DIR}/src/ws2812.pio)
