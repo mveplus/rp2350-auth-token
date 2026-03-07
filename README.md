@@ -126,6 +126,7 @@ Idle LED meaning:
 - white blink: not provisioned
 
 Use [PROTOCOL.md](/home/mtl/src/rp2350-token/PROTOCOL.md) for the exact request/response byte layout and security-mode semantics.
+Use [RELEASE_HARDENING.md](/home/mtl/src/rp2350-token/RELEASE_HARDENING.md) for the RP2350 secure-boot and release-hardening plan.
 
 Factory reset while firmware is running:
 
