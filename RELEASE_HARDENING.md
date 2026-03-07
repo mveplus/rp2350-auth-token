@@ -208,6 +208,17 @@ Acceptance:
 - one operator can prepare a new board repeatably
 - no secret is provisioned before the board is secure-boot locked
 
+Implementation in this repo:
+
+- `provision_release_device.sh`
+
+Current scripted sequence:
+
+1. `picotool load -f -x <signed uf2>`
+2. `picotool otp load -f <otp json>`
+3. `python3 get_state_hid.py`
+4. `python3 provision_hid.py --secret-hex ...`
+
 ### Phase 4: Optional encrypted boot
 
 Goal:

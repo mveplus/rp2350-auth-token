@@ -103,6 +103,7 @@ RP2350 HID Token
 - `provision_hid.py`: sends provisioning command (`CMD_PROVISION=2`) with a 32-byte secret in payload bytes `[4..35]`.
 - `get_state_hid.py`: queries `CMD_GET_STATE=3` and prints counters/checkpoint/generation/UID.
 - `regression_hid.py`: automated sign/provision/sign regression flow.
+- `provision_release_device.sh`: release operator flow for `flash -> OTP load -> GET_STATE -> provision`.
 
 ## Status codes
 
@@ -190,6 +191,27 @@ Release build policy:
 - RP2350 rollback rows must satisfy the hardware/tooling spacing rules. For `RBIT3`, rows must be three apart, for example `100;103`.
 - Every real release must monotonically increase the secure-boot version.
 - Do not reuse rollback rows for unrelated products or experiments.
+
+Release device bring-up:
+
+```bash
+./provision_release_device.sh \
+  --build-dir build_release \
+  --secret-hex "$(openssl rand -hex 32)"
+```
+
+Caution:
+
+- `picotool otp load` is the irreversible secure-boot step for release devices.
+- Use the release bring-up flow only on boards you intend to lock for release use.
+- Test the exact build, key, rollback version, and OTP JSON on sacrificial hardware first.
+
+This script performs the intended release order:
+
+1. flash signed release firmware with `picotool load -f -x`
+2. program secure-boot OTP rows with `picotool otp load -f`
+3. verify the token responds to `GET_STATE`
+4. provision the token secret over HID
 
 If the board is in BOOTSEL mode and mounted as a USB mass-storage device:
 
