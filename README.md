@@ -149,4 +149,15 @@ Install included rule and reload udev:
 ./install_udev_rule.sh
 ```
 
+Rule details:
+
+- matches `ID_VENDOR_ID=cafe` and `ID_MODEL_ID=4011`
+- sets device group to `dialout` and mode `0660`
+
+Ensure your user is in `dialout`:
+
+```bash
+id
+```
+
 Then replug the token and run scripts without `sudo`.
