@@ -1,6 +1,9 @@
 import hashlib
 import hmac
 
+VID = 0xCAFE
+PID = 0x4011
+
 REQ_VERSION = 1
 
 CMD_SIGN = 1
