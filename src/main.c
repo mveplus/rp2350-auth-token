@@ -189,10 +189,46 @@ static void process_packet(uint8_t tx[64]) {
         return;
     }
 
-    if (!get_bootsel_button_local()) {
+    // Approval window: 3 seconds
+    absolute_time_t deadline = make_timeout_time_ms(3000);
+    bool approved = false;
+    bool blink_on = false;
+    absolute_time_t last_blink = get_absolute_time();
+
+    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        tud_task();
+
+        if (get_bootsel_button_local()) {
+            approved = true;
+            break;
+        }
+
+        // Blue blink while waiting for approval
+        if (absolute_time_diff_us(last_blink, get_absolute_time()) >= 150000) {
+            last_blink = get_absolute_time();
+            blink_on = !blink_on;
+
+            if (blink_on) {
+                led_set_rgb(0, 0, 32);
+            } else {
+                led_set_rgb(0, 0, 0);
+            }
+        }
+    }
+
+    if (!approved) {
         tx[1] = STATUS_USER_PRESENCE_REQUIRED;
+
+        // Yellow flash = denied / timeout
+        led_set_rgb(32, 32, 0);
+        sleep_ms(120);
+        led_set_rgb(0, 0, 0);
         return;
     }
+
+    // Red flash while approving
+    led_set_rgb(32, 0, 0);
+    sleep_ms(80);
 
     uint8_t domain_key[32];
     uint8_t msg[34];
@@ -206,12 +242,16 @@ static void process_packet(uint8_t tx[64]) {
 
     hmac_sha256(domain_key, sizeof(domain_key), msg, sizeof(msg), mac);
     memcpy(&tx[4], mac, 32);
+
+    // White flash = success
+    led_set_rgb(32, 32, 32);
+    sleep_ms(120);
+    led_set_rgb(0, 0, 0);
 }
 
 // ----------------------------------------------------------------------------
 // Main
 // ----------------------------------------------------------------------------
-
 int main(void) {
     board_init();
     tusb_init();
@@ -223,25 +263,16 @@ int main(void) {
     while (1) {
         tud_task();
 
-        bool bootsel_pressed = get_bootsel_button_local();
-        if (absolute_time_diff_us(last_blink, get_absolute_time()) >= 200000) {
+        // Only show idle green blink when no packet is being processed
+        if (!packet_received &&
+            absolute_time_diff_us(last_blink, get_absolute_time()) >= 250000) {
             last_blink = get_absolute_time();
             blink_on = !blink_on;
 
-            if (bootsel_pressed) {
-                // red blink
-                if (blink_on) {
-                    led_set_rgb(32, 0, 0);
-                } else {
-                    led_set_rgb(0, 0, 0);
-                }
+            if (blink_on) {
+                led_set_rgb(0, 32, 0);
             } else {
-                // green blink
-                if (blink_on) {
-                    led_set_rgb(0, 32, 0);
-                } else {
-                    led_set_rgb(0, 0, 0);
-                }
+                led_set_rgb(0, 0, 0);
             }
         }
 
