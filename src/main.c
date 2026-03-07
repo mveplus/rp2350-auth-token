@@ -299,7 +299,7 @@ static uint8_t get_security_mode(void) {
     return (COUNTER_FLUSH_INTERVAL <= 1u) ? SECURITY_MODE_STRICT : SECURITY_MODE_BETA;
 }
 
-static void service_factory_reset_request(void) {
+static bool service_factory_reset_request(void) {
 #if WIPE_HOLD_MS > 0
     static bool hold_active = false;
     static absolute_time_t hold_started_at;
@@ -312,7 +312,7 @@ static void service_factory_reset_request(void) {
             blink_on = false;
             led_set_rgb(0, 0, 0);
         }
-        return;
+        return false;
     }
 
     if (!hold_active) {
@@ -321,7 +321,7 @@ static void service_factory_reset_request(void) {
         last_blink = hold_started_at;
         blink_on = true;
         led_set_rgb(32, 32, 32);
-        return;
+        return true;
     }
 
     if (absolute_time_diff_us(last_blink, get_absolute_time()) >= 150000) {
@@ -331,7 +331,7 @@ static void service_factory_reset_request(void) {
     }
 
     if (absolute_time_diff_us(hold_started_at, get_absolute_time()) < ((int64_t)WIPE_HOLD_MS * 1000)) {
-        return;
+        return true;
     }
 
     hold_active = false;
@@ -356,7 +356,9 @@ static void service_factory_reset_request(void) {
         tud_task();
         sleep_ms(20);
     }
+    return true;
 #endif
+    return false;
 }
 
 // ----------------------------------------------------------------------------
@@ -706,10 +708,17 @@ int main(void) {
 
     while (1) {
         tud_task();
+        bool reset_override_active = false;
+
+        if (!packet_received) {
+            // Wipe countdown/status should fully own the LED while BOOTSEL is held.
+            reset_override_active = service_factory_reset_request();
+        }
 
         // Idle status blink when no packet is being processed:
         // green = ready, white = unprovisioned.
         if (!packet_received &&
+            !reset_override_active &&
             absolute_time_diff_us(last_blink, get_absolute_time()) >= 250000) {
             last_blink = get_absolute_time();
             blink_on = !blink_on;
@@ -723,10 +732,6 @@ int main(void) {
             } else {
                 led_set_rgb(0, 0, 0);
             }
-        }
-
-        if (!packet_received) {
-            service_factory_reset_request();
         }
 
         if (packet_received && tud_hid_ready()) {
