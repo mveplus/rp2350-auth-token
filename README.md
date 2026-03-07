@@ -22,6 +22,7 @@ USB HID security token prototype for RP2350.
 - No master secret is baked into firmware.
 - Token must be provisioned before it can sign requests.
 - Provisioning command stores a flash-persisted secret.
+- Reprovisioning is blocked until the token is wiped.
 - Dual-slot flash state stores counter checkpoint + provisioned secret with CRC and generation.
 - Counter wear mitigation uses `COUNTER_FLUSH_INTERVAL` (default `64`) to checkpoint every N signatures.
 - Tradeoff: abrupt power loss can roll back up to `COUNTER_FLUSH_INTERVAL - 1` unsaved counter steps.
@@ -89,6 +90,7 @@ Firmware responses use these status values:
 - `5`: crypto or state persistence error
 - `6`: bad payload
 - `7`: not provisioned
+- `8`: provisioning locked (wipe required before reprovision)
 
 If you see `status: 4` in `test_hid.py`, run the command again and press `BOOTSEL` within the configured approval window (default `3000` ms).
 
@@ -96,6 +98,8 @@ Idle LED meaning:
 
 - green blink: provisioned and ready
 - white blink: not provisioned
+
+Use [PROTOCOL.md](/home/mtl/src/rp2350-token/PROTOCOL.md) for the exact request/response byte layout and security-mode semantics.
 
 Factory reset while firmware is running:
 
@@ -182,6 +186,13 @@ sudo python3 get_state_hid.py
 ```bash
 sudo python3 regression_hid.py --initial-secret-hex 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
 ```
+
+`GET_STATE` reports:
+
+- explicit `security_mode`
+- whether the token is provisioned
+- whether reprovision is locked
+- runtime counter vs persisted checkpoint
 
 Regression gotcha:
 

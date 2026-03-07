@@ -5,34 +5,8 @@ import os
 import time
 import hid
 
-VID = 0xCAFE
-PID = 0x4011
-
-REQ_VERSION = 1
-CMD_SIGN = 1
-CMD_PROVISION = 2
-CMD_GET_STATE = 3
-DOMAIN_SUDO = 1
-
-def hkdf_sha256(ikm: bytes, salt: bytes, info: bytes, out_len: int) -> bytes:
-    prk = hmac.new(salt, ikm, hashlib.sha256).digest()
-    okm = b""
-    t = b""
-    counter = 1
-    while len(okm) < out_len:
-        t = hmac.new(prk, t + info + bytes([counter]), hashlib.sha256).digest()
-        okm += t
-        counter += 1
-    return okm[:out_len]
-
-
-def derive_device_root_key(master_secret: bytes, uid_bytes: bytes) -> bytes:
-    return hkdf_sha256(master_secret, uid_bytes, b"rp2350-token-root-v1", 32)
-
-
-def derive_domain_key(root_key: bytes, domain: int) -> bytes:
-    label = b"rp2350-token-domain:\x00" + bytes([domain])
-    return hmac.new(root_key, label, hashlib.sha256).digest()
+from host_protocol import CMD_GET_STATE, CMD_PROVISION, CMD_SIGN, DOMAIN_SUDO, PID, REQ_VERSION, VID
+from host_protocol import derive_device_root_key, derive_domain_key, parse_get_state_response
 
 
 def select_token() -> dict:
@@ -102,16 +76,14 @@ def do_provision(path: bytes, new_secret: bytes) -> None:
     print("PROVISION ok")
 
 
-def get_state(path: bytes) -> tuple[int, int]:
+def get_state(path: bytes) -> dict:
     pkt = bytearray(64)
     pkt[0] = REQ_VERSION
     pkt[1] = CMD_GET_STATE
     resp = send_packet(path, bytes(pkt), timeout_ms=3000)
     if resp[1] != 0:
         raise SystemExit(f"GET_STATE failed with status={resp[1]}")
-    runtime_counter = int.from_bytes(resp[8:12], "little")
-    persisted_counter = int.from_bytes(resp[12:16], "little")
-    return runtime_counter, persisted_counter
+    return parse_get_state_response(resp)
 
 
 def main() -> None:
@@ -172,10 +144,11 @@ def main() -> None:
 
     print("\n[5/5] SIGN with new secret + state query")
     counter3, _ = do_sign(path, new_secret, uid_bytes)
-    runtime_counter, persisted_counter = get_state(path)
-    print("GET_STATE runtime_counter :", runtime_counter)
-    print("GET_STATE persisted_counter:", persisted_counter)
-    if runtime_counter < counter3:
+    state = get_state(path)
+    print("GET_STATE runtime_counter :", state["runtime_counter"])
+    print("GET_STATE persisted_counter:", state["persisted_counter"])
+    print("GET_STATE security_mode   :", state["security_mode"])
+    if state["runtime_counter"] < counter3:
         raise SystemExit("GET_STATE runtime counter is behind last signature")
 
     print("\nRegression passed")

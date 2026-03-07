@@ -80,12 +80,18 @@ enum {
     STATUS_CRYPTO_ERROR = 5,
     STATUS_BAD_PAYLOAD = 6,
     STATUS_NOT_PROVISIONED = 7,
+    STATUS_PROVISIONING_LOCKED = 8,
 };
 
 static PIO ws2812_pio = pio0;
 static int ws2812_sm_primary = 0;
 static int ws2812_sm_secondary = 1;
 static bool ws2812_secondary_enabled = false;
+
+enum {
+    SECURITY_MODE_STRICT = 1,
+    SECURITY_MODE_BETA = 2,
+};
 
 static void recompute_device_root_key(void);
 static void select_active_master_secret(void);
@@ -287,6 +293,10 @@ static bool flush_counter_checkpoint_if_needed(uint32_t next_counter) {
     }
 
     return persist_token_state(next_counter, NULL, false);
+}
+
+static uint8_t get_security_mode(void) {
+    return (COUNTER_FLUSH_INTERVAL <= 1u) ? SECURITY_MODE_STRICT : SECURITY_MODE_BETA;
 }
 
 static void service_factory_reset_request(void) {
@@ -541,6 +551,9 @@ static void handle_sign(uint8_t tx[64], uint8_t version, uint8_t domain) {
 
     if (!derive_domain_key(device_root_key, domain, domain_key)) {
         tx[1] = STATUS_CRYPTO_ERROR;
+        secure_memzero(domain_key, sizeof(domain_key));
+        secure_memzero(msg, sizeof(msg));
+        secure_memzero(mac, sizeof(mac));
         return;
     }
 
@@ -551,10 +564,16 @@ static void handle_sign(uint8_t tx[64], uint8_t version, uint8_t domain) {
 
     if (!hmac_sha256(domain_key, sizeof(domain_key), msg, sizeof(msg), mac)) {
         tx[1] = STATUS_CRYPTO_ERROR;
+        secure_memzero(domain_key, sizeof(domain_key));
+        secure_memzero(msg, sizeof(msg));
+        secure_memzero(mac, sizeof(mac));
         return;
     }
     memcpy(&tx[4], mac, 32);
     memcpy(&tx[36], &counter, sizeof(counter));
+    secure_memzero(domain_key, sizeof(domain_key));
+    secure_memzero(msg, sizeof(msg));
+    secure_memzero(mac, sizeof(mac));
 
     // White flash = success
     led_set_rgb(32, 32, 32);
@@ -576,6 +595,11 @@ static void handle_provision(uint8_t tx[64]) {
         return;
     }
 
+    if (token_state.flags & TOKEN_FLAG_MASTER_SECRET_SET) {
+        tx[1] = STATUS_PROVISIONING_LOCKED;
+        return;
+    }
+
     // Payload bytes [4..35] carry a replacement master secret.
     uint8_t new_master_secret[32];
     memcpy(new_master_secret, &rx_buf[4], sizeof(new_master_secret));
@@ -583,16 +607,19 @@ static void handle_provision(uint8_t tx[64]) {
     // Always checkpoint live counter before rotating master secret.
     if (!persist_token_state(runtime_counter, new_master_secret, true)) {
         tx[1] = STATUS_CRYPTO_ERROR;
+        secure_memzero(new_master_secret, sizeof(new_master_secret));
         return;
     }
 
     recompute_device_root_key();
     if (!crypto_ready) {
         tx[1] = STATUS_CRYPTO_ERROR;
+        secure_memzero(new_master_secret, sizeof(new_master_secret));
         return;
     }
 
     tx[4] = 1; // Provisioning applied.
+    secure_memzero(new_master_secret, sizeof(new_master_secret));
     led_set_rgb(32, 0, 32);
     sleep_ms(120);
     led_set_rgb(0, 0, 0);
@@ -602,7 +629,8 @@ static void handle_get_state(uint8_t tx[64]) {
     // tx[4..] is a compact diagnostics payload for host tooling.
     // [4]  protocol version
     // [5]  counter flush interval
-    // [6]  flags: bit0 master secret provisioned, bit1 counter dirty in RAM
+    // [6]  flags: bit0 master secret provisioned, bit1 counter dirty in RAM, bit2 reprovision locked
+    // [7]  security mode: 1 strict, 2 beta
     // [8:12]  runtime counter (live)
     // [12:16] persisted counter checkpoint
     // [16:20] state generation
@@ -616,6 +644,10 @@ static void handle_get_state(uint8_t tx[64]) {
     if (runtime_counter != token_state.counter) {
         tx[6] |= 0x02;
     }
+    if (token_state.flags & TOKEN_FLAG_MASTER_SECRET_SET) {
+        tx[6] |= 0x04;
+    }
+    tx[7] = get_security_mode();
 
     memcpy(&tx[8], &runtime_counter, sizeof(runtime_counter));
     memcpy(&tx[12], &token_state.counter, sizeof(token_state.counter));

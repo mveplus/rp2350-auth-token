@@ -3,7 +3,7 @@
 #include <mbedtls/md.h>
 #include <string.h>
 
-static void secure_memzero(void *buf, size_t len) {
+void secure_memzero(void *buf, size_t len) {
     volatile uint8_t *p = (volatile uint8_t *)buf;
     while (len--) {
         *p++ = 0;

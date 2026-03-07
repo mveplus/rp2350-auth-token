@@ -1,15 +1,11 @@
 import argparse
-import hmac
-import hashlib
 import os
 import hid
+import hmac
+import hashlib
 
-VID = 0xCAFE
-PID = 0x4011
-
-REQ_VERSION = 1
-CMD_SIGN = 1
-DOMAIN_SUDO = 1
+from host_protocol import CMD_SIGN, DOMAIN_SUDO, PID, REQ_VERSION, VID
+from host_protocol import derive_device_root_key, derive_domain_key
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -27,25 +23,6 @@ def get_master_secret(secret_hex: str) -> bytes:
     if len(secret) != 32:
         raise SystemExit("secret must be exactly 32 bytes (64 hex chars)")
     return secret
-
-def hkdf_sha256(ikm: bytes, salt: bytes, info: bytes, out_len: int) -> bytes:
-    """RFC5869 HKDF-SHA256 used to mirror firmware-side key derivation."""
-    prk = hmac.new(salt, ikm, hashlib.sha256).digest()
-    okm = b""
-    t = b""
-    counter = 1
-    while len(okm) < out_len:
-        t = hmac.new(prk, t + info + bytes([counter]), hashlib.sha256).digest()
-        okm += t
-        counter += 1
-    return okm[:out_len]
-
-def derive_device_root_key(master_secret: bytes, uid_bytes: bytes) -> bytes:
-    return hkdf_sha256(master_secret, uid_bytes, b"rp2350-token-root-v1", 32)
-
-def derive_domain_key(root_key: bytes, domain: int) -> bytes:
-    label = b"rp2350-token-domain:\x00" + bytes([domain])
-    return hmac.new(root_key, label, hashlib.sha256).digest()
 
 args = parse_args()
 master_secret = get_master_secret(args.secret_hex)

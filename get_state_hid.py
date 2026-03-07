@@ -1,10 +1,6 @@
 import hid
 
-VID = 0xCAFE
-PID = 0x4011
-
-REQ_VERSION = 1
-CMD_GET_STATE = 3
+from host_protocol import CMD_GET_STATE, PID, REQ_VERSION, VID, parse_get_state_response
 
 
 def main() -> None:
@@ -36,21 +32,19 @@ def main() -> None:
     if status != 0:
         raise SystemExit(f"GET_STATE failed with status={status}")
 
-    flags = resp[6]
-    runtime_counter = int.from_bytes(resp[8:12], "little")
-    persisted_counter = int.from_bytes(resp[12:16], "little")
-    generation = int.from_bytes(resp[16:20], "little")
-    uid_hex = resp[20:28].hex().upper()
+    state = parse_get_state_response(resp)
 
-    print("status            :", status)
-    print("protocol_version  :", resp[4])
-    print("flush_interval    :", resp[5])
-    print("master_provisioned:", bool(flags & 0x01))
-    print("counter_dirty_ram :", bool(flags & 0x02))
-    print("runtime_counter   :", runtime_counter)
-    print("persisted_counter :", persisted_counter)
-    print("state_generation  :", generation)
-    print("uid               :", uid_hex)
+    print("status            :", state["status"])
+    print("protocol_version  :", state["protocol_version"])
+    print("flush_interval    :", state["flush_interval"])
+    print("security_mode     :", state["security_mode_name"])
+    print("master_provisioned:", state["master_provisioned"])
+    print("provisioning_locked:", state["provisioning_locked"])
+    print("counter_dirty_ram :", state["counter_dirty_ram"])
+    print("runtime_counter   :", state["runtime_counter"])
+    print("persisted_counter :", state["persisted_counter"])
+    print("state_generation  :", state["state_generation"])
+    print("uid               :", state["uid_hex"])
 
 
 if __name__ == "__main__":

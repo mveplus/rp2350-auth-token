@@ -2,11 +2,7 @@ import argparse
 import os
 import hid
 
-VID = 0xCAFE
-PID = 0x4011
-
-REQ_VERSION = 1
-CMD_PROVISION = 2
+from host_protocol import CMD_PROVISION, PID, REQ_VERSION, STATUS_PROVISIONING_LOCKED, VID
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,6 +65,8 @@ def main() -> None:
     print("status     :", resp[1])
     print("applied    :", resp[4])
 
+    if resp[1] == STATUS_PROVISIONING_LOCKED:
+        raise SystemExit("Provisioning is locked; wipe the token before reprovisioning")
     if resp[1] != 0:
         raise SystemExit("Provisioning failed")
 
