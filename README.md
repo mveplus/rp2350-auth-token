@@ -131,6 +131,19 @@ sudo python3 get_state_hid.py
 sudo python3 regression_hid.py
 ```
 
+Regression gotcha:
+
+- `--initial-secret-hex` must match the token's current active secret.
+- `--new-secret-hex` must be different, otherwise the "old secret should fail" step is expected to fail.
+
+Example when current secret is `8899...6677` and you want to rotate to `0011...eeff`:
+
+```bash
+python3 regression_hid.py \
+  --initial-secret-hex 8899aabbccddeeff00112233445566778899aabbccddeeff0011223344556677 \
+  --new-secret-hex 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+```
+
 ## Testing another board
 
 Repeat flash + sign test on the second board. The serial number should differ, and derived keys will be unique per board UID.
