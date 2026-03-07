@@ -18,6 +18,10 @@ set(WS2812_SECONDARY_IS_GRB "" CACHE STRING "Secondary WS2812 color order: 1=GRB
 set(COUNTER_FLUSH_INTERVAL "" CACHE STRING "Persist counter every N signatures")
 set(APPROVAL_TIMEOUT_MS "" CACHE STRING "User-presence approval window in milliseconds")
 set(WIPE_HOLD_MS "" CACHE STRING "Hold BOOTSEL during boot for this many ms to wipe provisioned state")
+option(RELEASE_BUILD "Build a signed RP2350 release image for secure boot" OFF)
+set(RELEASE_SIGNING_KEY "" CACHE FILEPATH "PEM private key used by pico_sign_binary() for release builds")
+set(RELEASE_UF2_PACKAGE_ADDR "0x10000000" CACHE STRING "UF2 package address for release no-flash images")
+set(RELEASE_OTP_JSON "" CACHE FILEPATH "Optional custom output path for generated release OTP JSON")
 
 add_executable(rp2350_token
     src/main.c
@@ -70,5 +74,23 @@ target_link_libraries(rp2350_token
 
 pico_enable_stdio_usb(rp2350_token 0)
 pico_enable_stdio_uart(rp2350_token 0)
+
+if (RELEASE_BUILD)
+    if ("${RELEASE_SIGNING_KEY}" STREQUAL "")
+        message(FATAL_ERROR "RELEASE_BUILD=ON requires -DRELEASE_SIGNING_KEY=/path/to/release-private.pem")
+    endif()
+
+    # Release builds execute from SRAM after boot ROM verification instead of trusting
+    # executable code directly from external flash.
+    pico_set_binary_type(rp2350_token no_flash)
+    pico_package_uf2_output(rp2350_token ${RELEASE_UF2_PACKAGE_ADDR})
+
+    if (NOT "${RELEASE_OTP_JSON}" STREQUAL "")
+        pico_set_otp_key_output_file(rp2350_token ${RELEASE_OTP_JSON})
+    endif()
+
+    pico_sign_binary(rp2350_token ${RELEASE_SIGNING_KEY})
+    target_compile_definitions(rp2350_token PRIVATE RELEASE_BUILD=1)
+endif()
 
 pico_add_extra_outputs(rp2350_token)

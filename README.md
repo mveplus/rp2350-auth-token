@@ -164,6 +164,20 @@ cmake -S . -B build_beta -DWIPE_HOLD_MS=10000
 
 That example changes BOOTSEL hold-to-wipe time from the default `20000` ms to `10000` ms.
 
+Release build with RP2350 signing enabled:
+
+```bash
+cmake -S . -B build_release \
+  -DRELEASE_BUILD=ON \
+  -DRELEASE_SIGNING_KEY=$PWD/keys/release-private.pem
+cmake --build build_release -j
+```
+
+Expected additional release outputs:
+
+- signed release image artifacts
+- `rp2350_token.otp.json` unless overridden with `-DRELEASE_OTP_JSON=...`
+
 If the board is in BOOTSEL mode and mounted as a USB mass-storage device:
 
 ```bash
