@@ -1,4 +1,4 @@
-# mveplus RP2350 HID Token
+# RP2350 HID Token
 
 USB HID security token prototype for RP2350.
 
