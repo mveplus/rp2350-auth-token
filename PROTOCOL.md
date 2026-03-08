@@ -73,6 +73,8 @@ Response payload:
 - bit `0`: master secret provisioned
 - bit `1`: counter dirty in RAM
 - bit `2`: reprovision locked
+- bit `3`: at-rest secret protection active
+- bit `4`: secret successfully loaded for signing
 
 Security modes:
 
@@ -101,12 +103,14 @@ Mode definition:
 - per-device root keys are derived from provisioned master secret + board UID
 - user presence is required for signing and provisioning
 - secret is not baked into firmware
+- hardened builds can wrap the provisioned master secret at rest using OTP-bound key material
 - wipe is required before reprovisioning
 - `GET_STATE` exposes current security mode and replay-counter checkpoint state
 
 ## Non-properties
 
 - no protection against physical flash extraction
+- dev fallback mode may still store the provisioned master secret plaintext in flash
 - no secure boot or firmware authenticity chain
 - beta mode permits rollback inside the checkpoint window after sudden power loss
 - host trust is still required for correct intent display and command origin

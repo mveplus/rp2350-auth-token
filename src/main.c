@@ -17,6 +17,7 @@
 #include "hardware/regs/addressmap.h"
 #include "hardware/structs/ioqspi.h"
 #include "hardware/structs/sio.h"
+#include "pico/bootrom.h"
 
 #include "ws2812.pio.h"
 
@@ -57,6 +58,8 @@ static uint8_t device_root_key[32];
 static uint8_t active_master_secret[32];
 static pico_unique_board_id_t device_uid;
 static bool crypto_ready = false;
+static bool master_secret_loaded = false;
+static bool storage_protection_active = false;
 
 enum {
     REQ_VERSION = 1,
@@ -103,8 +106,9 @@ bool __no_inline_not_in_flash_func(get_bootsel_button_local)(void);
 // ----------------------------------------------------------------------------
 
 #define TOKEN_STATE_MAGIC             0x314e4b54u // "TKN1"
-#define TOKEN_STATE_VERSION           1u
+#define TOKEN_STATE_VERSION           2u
 #define TOKEN_FLAG_MASTER_SECRET_SET  0x0001u
+#define TOKEN_FLAG_MASTER_SECRET_WRAPPED 0x0002u
 
 #define TOKEN_STATE_SLOT_A_OFFSET (PICO_FLASH_SIZE_BYTES - (2 * FLASH_SECTOR_SIZE))
 #define TOKEN_STATE_SLOT_B_OFFSET (PICO_FLASH_SIZE_BYTES - (1 * FLASH_SECTOR_SIZE))
@@ -116,8 +120,19 @@ typedef struct {
     uint32_t generation;
     uint32_t counter;
     uint8_t provisioned_master_secret[32];
+    uint8_t provisioned_master_secret_tag[16];
     uint32_t crc32;
 } token_state_t;
+
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t flags;
+    uint32_t generation;
+    uint32_t counter;
+    uint8_t provisioned_master_secret[32];
+    uint32_t crc32;
+} token_state_v1_t;
 
 static token_state_t token_state;
 static int active_state_slot = -1;
@@ -134,6 +149,20 @@ static uint32_t runtime_counter = 0;
 
 #ifndef WIPE_HOLD_MS
 #define WIPE_HOLD_MS 20000u
+#endif
+
+#ifndef SECRET_WRAP_OTP_ROW_START
+#define SECRET_WRAP_OTP_ROW_START 0xffffu
+#endif
+
+#define SECRET_WRAP_OTP_WORD_COUNT 8u
+
+#ifndef ALLOW_INSECURE_STORAGE_FALLBACK
+#ifdef RELEASE_BUILD
+#define ALLOW_INSECURE_STORAGE_FALLBACK 0
+#else
+#define ALLOW_INSECURE_STORAGE_FALLBACK 1
+#endif
 #endif
 
 static uint32_t crc32_update(uint32_t crc, uint8_t byte) {
@@ -153,6 +182,14 @@ static uint32_t crc32_compute(const void *data, size_t len) {
     return ~crc;
 }
 
+static bool token_state_v1_is_valid(const token_state_v1_t *state) {
+    if (state->magic != TOKEN_STATE_MAGIC || state->version != 1u) {
+        return false;
+    }
+    uint32_t expected = crc32_compute(state, offsetof(token_state_v1_t, crc32));
+    return expected == state->crc32;
+}
+
 static bool token_state_is_valid(const token_state_t *state) {
     if (state->magic != TOKEN_STATE_MAGIC || state->version != TOKEN_STATE_VERSION) {
         return false;
@@ -165,7 +202,25 @@ static bool read_state_slot(int slot, token_state_t *out) {
     uint32_t offset = (slot == 0) ? TOKEN_STATE_SLOT_A_OFFSET : TOKEN_STATE_SLOT_B_OFFSET;
     const uint8_t *flash_ptr = (const uint8_t *)(XIP_BASE + offset);
     memcpy(out, flash_ptr, sizeof(*out));
-    return token_state_is_valid(out);
+    if (token_state_is_valid(out)) {
+        return true;
+    }
+
+    token_state_v1_t legacy = {0};
+    memcpy(&legacy, flash_ptr, sizeof(legacy));
+    if (!token_state_v1_is_valid(&legacy)) {
+        return false;
+    }
+
+    memset(out, 0, sizeof(*out));
+    out->magic = legacy.magic;
+    out->version = TOKEN_STATE_VERSION;
+    out->flags = legacy.flags;
+    out->generation = legacy.generation;
+    out->counter = legacy.counter;
+    memcpy(out->provisioned_master_secret, legacy.provisioned_master_secret,
+           sizeof(legacy.provisioned_master_secret));
+    return true;
 }
 
 static bool write_state_slot(int slot, const token_state_t *state) {
@@ -193,6 +248,115 @@ static void reset_token_state_in_ram(void) {
     recompute_device_root_key();
 }
 
+static bool load_storage_wrap_key(uint8_t wrap_key[32]) {
+    uint16_t otp_words[SECRET_WRAP_OTP_WORD_COUNT] = {0};
+    uint8_t otp_secret[SECRET_WRAP_OTP_WORD_COUNT * sizeof(uint16_t)] = {0};
+
+    if (SECRET_WRAP_OTP_ROW_START == 0xffffu) {
+        return false;
+    }
+
+    otp_cmd_t cmd = {
+        .flags = SECRET_WRAP_OTP_ROW_START | OTP_CMD_ECC_BITS,
+    };
+    int rc = rom_func_otp_access((uint8_t *)otp_words, sizeof(otp_words), cmd);
+    if (rc != 0) {
+        secure_memzero(otp_words, sizeof(otp_words));
+        return false;
+    }
+
+    memcpy(otp_secret, otp_words, sizeof(otp_secret));
+    secure_memzero(otp_words, sizeof(otp_words));
+    bool ok = derive_storage_wrap_key(otp_secret, sizeof(otp_secret),
+                                      device_uid.id, sizeof(device_uid.id),
+                                      wrap_key);
+    secure_memzero(otp_secret, sizeof(otp_secret));
+    return ok;
+}
+
+static bool derive_wrap_subkey(const uint8_t wrap_key[32], const char *label, uint8_t out[32]) {
+    return hmac_sha256(wrap_key, 32, (const uint8_t *)label, strlen(label), out);
+}
+
+static bool wrap_master_secret_for_storage(const uint8_t plaintext[32],
+                                           uint8_t ciphertext[32],
+                                           uint8_t tag[16],
+                                           bool *protected_out) {
+    uint8_t wrap_key[32];
+    if (!load_storage_wrap_key(wrap_key)) {
+#if ALLOW_INSECURE_STORAGE_FALLBACK
+        memcpy(ciphertext, plaintext, 32);
+        memset(tag, 0, 16);
+        *protected_out = false;
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    uint8_t enc_mask[32];
+    uint8_t mac_key[32];
+    uint8_t full_tag[32];
+    bool ok = derive_wrap_subkey(wrap_key, "rp2350-token-wrap-mask-v1", enc_mask) &&
+              derive_wrap_subkey(wrap_key, "rp2350-token-wrap-tag-v1", mac_key);
+    if (!ok) {
+        secure_memzero(wrap_key, sizeof(wrap_key));
+        secure_memzero(enc_mask, sizeof(enc_mask));
+        secure_memzero(mac_key, sizeof(mac_key));
+        secure_memzero(full_tag, sizeof(full_tag));
+        return false;
+    }
+
+    for (size_t i = 0; i < 32; ++i) {
+        ciphertext[i] = plaintext[i] ^ enc_mask[i];
+    }
+    ok = hmac_sha256(mac_key, sizeof(mac_key), ciphertext, 32, full_tag);
+    if (ok) {
+        memcpy(tag, full_tag, 16);
+        *protected_out = true;
+    }
+
+    secure_memzero(wrap_key, sizeof(wrap_key));
+    secure_memzero(enc_mask, sizeof(enc_mask));
+    secure_memzero(mac_key, sizeof(mac_key));
+    secure_memzero(full_tag, sizeof(full_tag));
+    return ok;
+}
+
+static bool unwrap_master_secret_from_storage(const uint8_t ciphertext[32],
+                                              const uint8_t tag[16],
+                                              uint8_t plaintext[32]) {
+    uint8_t wrap_key[32];
+    if (!load_storage_wrap_key(wrap_key)) {
+        return false;
+    }
+
+    uint8_t enc_mask[32];
+    uint8_t mac_key[32];
+    uint8_t full_tag[32];
+    bool ok = derive_wrap_subkey(wrap_key, "rp2350-token-wrap-mask-v1", enc_mask) &&
+              derive_wrap_subkey(wrap_key, "rp2350-token-wrap-tag-v1", mac_key) &&
+              hmac_sha256(mac_key, sizeof(mac_key), ciphertext, 32, full_tag);
+    if (!ok || memcmp(full_tag, tag, 16) != 0) {
+        secure_memzero(wrap_key, sizeof(wrap_key));
+        secure_memzero(enc_mask, sizeof(enc_mask));
+        secure_memzero(mac_key, sizeof(mac_key));
+        secure_memzero(full_tag, sizeof(full_tag));
+        secure_memzero(plaintext, 32);
+        return false;
+    }
+
+    for (size_t i = 0; i < 32; ++i) {
+        plaintext[i] = ciphertext[i] ^ enc_mask[i];
+    }
+
+    secure_memzero(wrap_key, sizeof(wrap_key));
+    secure_memzero(enc_mask, sizeof(enc_mask));
+    secure_memzero(mac_key, sizeof(mac_key));
+    secure_memzero(full_tag, sizeof(full_tag));
+    return true;
+}
+
 static bool wipe_token_state_flash(void) {
     uint32_t flags = save_and_disable_interrupts();
     flash_range_erase(TOKEN_STATE_SLOT_A_OFFSET, 2 * FLASH_SECTOR_SIZE);
@@ -204,8 +368,27 @@ static bool wipe_token_state_flash(void) {
 }
 
 static void select_active_master_secret(void) {
+    master_secret_loaded = false;
+    storage_protection_active = false;
+
     if (token_state.flags & TOKEN_FLAG_MASTER_SECRET_SET) {
+        if (token_state.flags & TOKEN_FLAG_MASTER_SECRET_WRAPPED) {
+            if (unwrap_master_secret_from_storage(token_state.provisioned_master_secret,
+                                                  token_state.provisioned_master_secret_tag,
+                                                  active_master_secret)) {
+                master_secret_loaded = true;
+                storage_protection_active = true;
+                return;
+            }
+            memset(active_master_secret, 0, sizeof(active_master_secret));
+            return;
+        }
+#if ALLOW_INSECURE_STORAGE_FALLBACK
         memcpy(active_master_secret, token_state.provisioned_master_secret, sizeof(active_master_secret));
+        master_secret_loaded = true;
+        return;
+#endif
+        memset(active_master_secret, 0, sizeof(active_master_secret));
     } else {
         memset(active_master_secret, 0, sizeof(active_master_secret));
     }
@@ -253,8 +436,19 @@ static bool persist_token_state(uint32_t new_counter,
     next.counter = new_counter;
 
     if (set_master_secret && new_master_secret) {
-        memcpy(next.provisioned_master_secret, new_master_secret, sizeof(next.provisioned_master_secret));
+        bool secret_wrapped = false;
+        if (!wrap_master_secret_for_storage(new_master_secret,
+                                            next.provisioned_master_secret,
+                                            next.provisioned_master_secret_tag,
+                                            &secret_wrapped)) {
+            return false;
+        }
         next.flags |= TOKEN_FLAG_MASTER_SECRET_SET;
+        if (secret_wrapped) {
+            next.flags |= TOKEN_FLAG_MASTER_SECRET_WRAPPED;
+        } else {
+            next.flags &= (uint16_t)~TOKEN_FLAG_MASTER_SECRET_WRAPPED;
+        }
     }
 
     next.crc32 = crc32_compute(&next, offsetof(token_state_t, crc32));
@@ -271,7 +465,7 @@ static bool persist_token_state(uint32_t new_counter,
 }
 
 static void recompute_device_root_key(void) {
-    if (!(token_state.flags & TOKEN_FLAG_MASTER_SECRET_SET)) {
+    if (!master_secret_loaded) {
         memset(device_root_key, 0, sizeof(device_root_key));
         crypto_ready = false;
         return;
@@ -631,7 +825,8 @@ static void handle_get_state(uint8_t tx[64]) {
     // tx[4..] is a compact diagnostics payload for host tooling.
     // [4]  protocol version
     // [5]  counter flush interval
-    // [6]  flags: bit0 master secret provisioned, bit1 counter dirty in RAM, bit2 reprovision locked
+    // [6]  flags: bit0 master secret provisioned, bit1 counter dirty in RAM, bit2 reprovision locked,
+    //             bit3 at-rest protection active, bit4 secret successfully loaded
     // [7]  security mode: 1 strict, 2 beta
     // [8:12]  runtime counter (live)
     // [12:16] persisted counter checkpoint
@@ -648,6 +843,12 @@ static void handle_get_state(uint8_t tx[64]) {
     }
     if (token_state.flags & TOKEN_FLAG_MASTER_SECRET_SET) {
         tx[6] |= 0x04;
+    }
+    if (storage_protection_active) {
+        tx[6] |= 0x08;
+    }
+    if (master_secret_loaded) {
+        tx[6] |= 0x10;
     }
     tx[7] = get_security_mode();
 

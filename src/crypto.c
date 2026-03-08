@@ -38,6 +38,24 @@ bool derive_device_root_key(const uint8_t *master_secret, size_t master_secret_l
                         out, 32) == 0;
 }
 
+bool derive_storage_wrap_key(const uint8_t *otp_secret, size_t otp_secret_len,
+                             const uint8_t *device_uid, size_t device_uid_len,
+                             uint8_t out[32]) {
+    static const uint8_t info[] = "rp2350-token-wrap-v1";
+    const mbedtls_md_info_t *md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+
+    if (!md) {
+        return false;
+    }
+
+    // OTP secret material supplies entropy; the public UID binds the wrapping key to one device.
+    return mbedtls_hkdf(md,
+                        device_uid, device_uid_len,
+                        otp_secret, otp_secret_len,
+                        info, sizeof(info) - 1,
+                        out, 32) == 0;
+}
+
 bool derive_domain_key(const uint8_t root_key[32], uint8_t domain, uint8_t out[32]) {
     static const uint8_t label_prefix[] = "rp2350-token-domain:";
     uint8_t label[sizeof(label_prefix) + 1];

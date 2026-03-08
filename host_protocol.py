@@ -68,6 +68,8 @@ def parse_get_state_response(resp: bytes) -> dict:
         "master_provisioned": bool(flags & 0x01),
         "counter_dirty_ram": bool(flags & 0x02),
         "provisioning_locked": bool(flags & 0x04),
+        "storage_protection_active": bool(flags & 0x08),
+        "secret_loaded": bool(flags & 0x10),
         "security_mode": security_mode,
         "security_mode_name": security_mode_name,
         "runtime_counter": int.from_bytes(resp[8:12], "little"),

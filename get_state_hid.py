@@ -40,6 +40,8 @@ def main() -> None:
     print("security_mode     :", state["security_mode_name"])
     print("master_provisioned:", state["master_provisioned"])
     print("provisioning_locked:", state["provisioning_locked"])
+    print("storage_protected :", state["storage_protection_active"])
+    print("secret_loaded     :", state["secret_loaded"])
     print("counter_dirty_ram :", state["counter_dirty_ram"])
     print("runtime_counter   :", state["runtime_counter"])
     print("persisted_counter :", state["persisted_counter"])

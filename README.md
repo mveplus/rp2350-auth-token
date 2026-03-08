@@ -27,6 +27,8 @@ USB HID security token prototype for RP2350.
 - No master secret is baked into firmware.
 - Token must be provisioned before it can sign requests.
 - Provisioning command stores a flash-persisted secret.
+- Hardened builds can wrap that secret at rest using OTP-bound key material plus the device UID.
+- Development builds can keep an explicit plaintext fallback so boards remain usable before OTP bring-up is part of the workflow.
 - Reprovisioning is blocked until the token is wiped.
 - Dual-slot flash state stores counter checkpoint + provisioned secret with CRC and generation.
 - Counter wear mitigation uses `COUNTER_FLUSH_INTERVAL` (default `64`) to checkpoint every N signatures.
@@ -184,6 +186,20 @@ cmake -S . -B build_release \
 cmake --build build_release -j
 ```
 
+Optional at-rest secret protection knobs:
+
+```bash
+cmake -S . -B build_beta \
+  -DSECRET_WRAP_OTP_ROW_START=200 \
+  -DALLOW_INSECURE_STORAGE_FALLBACK=0
+```
+
+Meaning:
+
+- `SECRET_WRAP_OTP_ROW_START` points at 8 ECC OTP rows used as secret wrapping material
+- `ALLOW_INSECURE_STORAGE_FALLBACK=0` refuses plaintext storage if OTP wrapping material is unavailable
+- default dev behavior keeps fallback enabled so unprovisioned development boards are still easy to use
+
 Expected additional release outputs:
 
 - signed release image artifacts
@@ -295,6 +311,8 @@ sudo python3 regression_hid.py --initial-secret-hex 00112233445566778899aabbccdd
 - explicit `security_mode`
 - whether the token is provisioned
 - whether reprovision is locked
+- whether at-rest secret protection is active
+- whether the secret was successfully loaded for signing
 - runtime counter vs persisted checkpoint
 
 Regression gotcha:

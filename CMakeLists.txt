@@ -18,6 +18,8 @@ set(WS2812_SECONDARY_IS_GRB "" CACHE STRING "Secondary WS2812 color order: 1=GRB
 set(COUNTER_FLUSH_INTERVAL "" CACHE STRING "Persist counter every N signatures")
 set(APPROVAL_TIMEOUT_MS "" CACHE STRING "User-presence approval window in milliseconds")
 set(WIPE_HOLD_MS "" CACHE STRING "Hold BOOTSEL during boot for this many ms to wipe provisioned state")
+set(SECRET_WRAP_OTP_ROW_START "" CACHE STRING "OTP row start for 8 ECC rows of flash-wrapping secret material")
+set(ALLOW_INSECURE_STORAGE_FALLBACK "" CACHE STRING "Allow plaintext secret storage fallback when no OTP wrap secret is configured (1=yes, 0=no)")
 option(RELEASE_BUILD "Build a signed RP2350 release image for secure boot" OFF)
 set(RELEASE_SIGNING_KEY "" CACHE FILEPATH "PEM private key used by pico_sign_binary() for release builds")
 set(RELEASE_UF2_PACKAGE_ADDR "0x10000000" CACHE STRING "UF2 package address for release no-flash images")
@@ -63,6 +65,14 @@ endif()
 
 if (NOT "${WIPE_HOLD_MS}" STREQUAL "")
     target_compile_definitions(rp2350_token PRIVATE WIPE_HOLD_MS=${WIPE_HOLD_MS})
+endif()
+
+if (NOT "${SECRET_WRAP_OTP_ROW_START}" STREQUAL "")
+    target_compile_definitions(rp2350_token PRIVATE SECRET_WRAP_OTP_ROW_START=${SECRET_WRAP_OTP_ROW_START})
+endif()
+
+if (NOT "${ALLOW_INSECURE_STORAGE_FALLBACK}" STREQUAL "")
+    target_compile_definitions(rp2350_token PRIVATE ALLOW_INSECURE_STORAGE_FALLBACK=${ALLOW_INSECURE_STORAGE_FALLBACK})
 endif()
 
 pico_generate_pio_header(rp2350_token ${CMAKE_CURRENT_LIST_DIR}/src/ws2812.pio)

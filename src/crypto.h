@@ -10,6 +10,11 @@ bool derive_device_root_key(const uint8_t *master_secret, size_t master_secret_l
                             const uint8_t *device_uid, size_t device_uid_len,
                             uint8_t out[32]);
 
+// Derive a device-bound flash wrapping key from secret OTP material and public device UID.
+bool derive_storage_wrap_key(const uint8_t *otp_secret, size_t otp_secret_len,
+                             const uint8_t *device_uid, size_t device_uid_len,
+                             uint8_t out[32]);
+
 // Derive domain-scoped signing key from device root key.
 bool derive_domain_key(const uint8_t root_key[32], uint8_t domain, uint8_t out[32]);
 

@@ -21,9 +21,10 @@ from host_protocol import (
 
 
 class TokenSim:
-    def __init__(self, uid_hex: str, flush_interval: int = 64):
+    def __init__(self, uid_hex: str, flush_interval: int = 64, storage_protected: bool = False):
         self.uid = bytes.fromhex(uid_hex)
         self.flush_interval = flush_interval
+        self.storage_protected = storage_protected
         self.persisted_counter = 0
         self.runtime_counter = 0
         self.generation = 0
@@ -87,6 +88,9 @@ class TokenSim:
         if self.provisioned:
             flags |= 0x01
             flags |= 0x04
+            flags |= 0x10
+        if self.storage_protected and self.provisioned:
+            flags |= 0x08
         if self.runtime_counter != self.persisted_counter:
             flags |= 0x02
         resp[6] = flags
@@ -117,7 +121,16 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(state["security_mode"], SECURITY_MODE_BETA)
         self.assertTrue(state["master_provisioned"])
         self.assertTrue(state["provisioning_locked"])
+        self.assertTrue(state["secret_loaded"])
+        self.assertFalse(state["storage_protection_active"])
         self.assertEqual(state["runtime_counter"], 1)
+
+    def test_protected_storage_state_reported(self) -> None:
+        token = TokenSim(self.UID_HEX, storage_protected=True)
+        self.assertEqual(token.provision(self.SECRET_A)[1], STATUS_OK)
+        state = parse_get_state_response(token.get_state())
+        self.assertTrue(state["storage_protection_active"])
+        self.assertTrue(state["secret_loaded"])
 
     def test_wipe_returns_to_unprovisioned(self) -> None:
         token = TokenSim(self.UID_HEX)
