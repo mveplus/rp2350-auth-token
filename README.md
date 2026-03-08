@@ -193,6 +193,27 @@ Release build policy:
 - Every real release must monotonically increase the secure-boot version.
 - Do not reuse rollback rows for unrelated products or experiments.
 
+## GitHub releases
+
+Current GitHub release automation is intentionally split by tag namespace:
+
+- `dev-v*`: builds the normal development firmware and publishes a prerelease with `.uf2`, `.elf`, and `SHA256SUMS.txt`
+- `release-v*`: reserved for future signed release automation
+- `secure-v*`: reserved for future encrypted/signed release automation
+
+Current behavior:
+
+- only `dev-v*` tags trigger an automated GitHub release
+- the workflow uses the normal `build_beta` path, not the secure-boot release path
+- this keeps developer firmware distribution simple while leaving a clean migration path for signed builds later
+
+Example dev tag:
+
+```bash
+git tag dev-v0.1.0
+git push origin dev-v0.1.0
+```
+
 Release device bring-up:
 
 ```bash
