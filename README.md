@@ -17,6 +17,11 @@ USB HID security token prototype for RP2350.
 - HID state command (`CMD_GET_STATE=3`) for diagnostics
 - Dual WS2812 pin compatibility output (GPIO22 + GPIO16) for mixed RP2350 mini boards
 
+## Tested boards
+
+- TENSTAR RP2350-USB 16MB Flash Mini Development Board: <https://manuals.plus/ae/1005008622261552>
+- Waveshare RP2350-Zero: <https://www.waveshare.com/rp2350-zero.htm>
+
 ## Security notes
 
 - No master secret is baked into firmware.
