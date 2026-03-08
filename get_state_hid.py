@@ -37,7 +37,7 @@ def main() -> None:
     print("status            :", state["status"])
     print("protocol_version  :", state["protocol_version"])
     print("flush_interval    :", state["flush_interval"])
-    print("security_mode     :", state["security_mode_name"])
+    print("replay_protection :", state["replay_protection_mode_name"])
     print("master_provisioned:", state["master_provisioned"])
     print("provisioning_locked:", state["provisioning_locked"])
     print("storage_protected :", state["storage_protection_active"])

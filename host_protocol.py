@@ -24,8 +24,8 @@ STATUS_BAD_PAYLOAD = 6
 STATUS_NOT_PROVISIONED = 7
 STATUS_PROVISIONING_LOCKED = 8
 
-SECURITY_MODE_STRICT = 1
-SECURITY_MODE_BETA = 2
+REPLAY_PROTECTION_MODE_STRICT = 1
+REPLAY_PROTECTION_MODE_DEV = 2
 
 
 def hkdf_sha256(ikm: bytes, salt: bytes, info: bytes, out_len: int) -> bytes:
@@ -54,11 +54,11 @@ def parse_get_state_response(resp: bytes) -> dict:
         raise ValueError("response must be exactly 64 bytes")
 
     flags = resp[6]
-    security_mode = resp[7]
-    security_mode_name = {
-        SECURITY_MODE_STRICT: "strict",
-        SECURITY_MODE_BETA: "beta",
-    }.get(security_mode, f"unknown({security_mode})")
+    replay_protection_mode = resp[7]
+    replay_protection_mode_name = {
+        REPLAY_PROTECTION_MODE_STRICT: "strict",
+        REPLAY_PROTECTION_MODE_DEV: "dev",
+    }.get(replay_protection_mode, f"unknown({replay_protection_mode})")
 
     return {
         "status": resp[1],
@@ -70,8 +70,8 @@ def parse_get_state_response(resp: bytes) -> dict:
         "provisioning_locked": bool(flags & 0x04),
         "storage_protection_active": bool(flags & 0x08),
         "secret_loaded": bool(flags & 0x10),
-        "security_mode": security_mode,
-        "security_mode_name": security_mode_name,
+        "replay_protection_mode": replay_protection_mode,
+        "replay_protection_mode_name": replay_protection_mode_name,
         "runtime_counter": int.from_bytes(resp[8:12], "little"),
         "persisted_counter": int.from_bytes(resp[12:16], "little"),
         "state_generation": int.from_bytes(resp[16:20], "little"),

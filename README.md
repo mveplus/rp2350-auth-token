@@ -52,7 +52,7 @@ Not protected against:
 - Attackers who can reflash firmware, unless you add a secure boot or firmware authenticity story.
 - Side-channel or fault-injection extraction.
 - Social engineering where a user is tricked into pressing `BOOTSEL` for the wrong action.
-- Power-loss rollback inside the unsaved checkpoint window when running in `beta` security mode.
+- Power-loss rollback inside the unsaved checkpoint window when running in `dev` replay-protection mode.
 - A fully compromised host that can steer requests and UI timing, subject only to the BOOTSEL presence check.
 
 Design assumptions:
@@ -109,7 +109,7 @@ RP2350 HID Token
 
 - `test_hid.py`: sends sign command and verifies MAC.
 - `provision_hid.py`: sends provisioning command (`CMD_PROVISION=2`) with a 32-byte secret in payload bytes `[4..35]`.
-- `get_state_hid.py`: queries `CMD_GET_STATE=3` and prints counters/checkpoint/generation/UID.
+- `get_state_hid.py`: queries `CMD_GET_STATE=3` and prints replay-protection mode, counters, checkpoint, generation, and UID.
 - `regression_hid.py`: automated sign/provision/sign regression flow.
 - `provision_release_device.sh`: release operator flow for `flash -> OTP load -> GET_STATE -> provision`.
 
@@ -134,7 +134,7 @@ Idle LED meaning:
 - green blink: provisioned and ready
 - white blink: not provisioned
 
-Use [PROTOCOL.md](/home/mtl/src/rp2350-token/PROTOCOL.md) for the exact request/response byte layout and security-mode semantics.
+Use [PROTOCOL.md](/home/mtl/src/rp2350-token/PROTOCOL.md) for the exact request/response byte layout and replay-protection semantics.
 Use [RELEASE_HARDENING.md](/home/mtl/src/rp2350-token/RELEASE_HARDENING.md) for the RP2350 secure-boot and release-hardening plan.
 
 Factory reset while firmware is running:
@@ -308,7 +308,7 @@ sudo python3 regression_hid.py --initial-secret-hex 00112233445566778899aabbccdd
 
 `GET_STATE` reports:
 
-- explicit `security_mode`
+- explicit `replay_protection_mode`
 - whether the token is provisioned
 - whether reprovision is locked
 - whether at-rest secret protection is active

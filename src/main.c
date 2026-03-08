@@ -92,8 +92,8 @@ static int ws2812_sm_secondary = 1;
 static bool ws2812_secondary_enabled = false;
 
 enum {
-    SECURITY_MODE_STRICT = 1,
-    SECURITY_MODE_BETA = 2,
+    REPLAY_PROTECTION_MODE_STRICT = 1,
+    REPLAY_PROTECTION_MODE_DEV = 2,
 };
 
 static void recompute_device_root_key(void);
@@ -489,8 +489,8 @@ static bool flush_counter_checkpoint_if_needed(uint32_t next_counter) {
     return persist_token_state(next_counter, NULL, false);
 }
 
-static uint8_t get_security_mode(void) {
-    return (COUNTER_FLUSH_INTERVAL <= 1u) ? SECURITY_MODE_STRICT : SECURITY_MODE_BETA;
+static uint8_t get_replay_protection_mode(void) {
+    return (COUNTER_FLUSH_INTERVAL <= 1u) ? REPLAY_PROTECTION_MODE_STRICT : REPLAY_PROTECTION_MODE_DEV;
 }
 
 static bool service_factory_reset_request(void) {
@@ -827,7 +827,7 @@ static void handle_get_state(uint8_t tx[64]) {
     // [5]  counter flush interval
     // [6]  flags: bit0 master secret provisioned, bit1 counter dirty in RAM, bit2 reprovision locked,
     //             bit3 at-rest protection active, bit4 secret successfully loaded
-    // [7]  security mode: 1 strict, 2 beta
+    // [7]  replay protection mode: 1 strict, 2 dev
     // [8:12]  runtime counter (live)
     // [12:16] persisted counter checkpoint
     // [16:20] state generation
@@ -850,7 +850,7 @@ static void handle_get_state(uint8_t tx[64]) {
     if (master_secret_loaded) {
         tx[6] |= 0x10;
     }
-    tx[7] = get_security_mode();
+    tx[7] = get_replay_protection_mode();
 
     memcpy(&tx[8], &runtime_counter, sizeof(runtime_counter));
     memcpy(&tx[12], &token_state.counter, sizeof(token_state.counter));

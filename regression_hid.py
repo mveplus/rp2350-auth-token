@@ -147,7 +147,7 @@ def main() -> None:
     state = get_state(path)
     print("GET_STATE runtime_counter :", state["runtime_counter"])
     print("GET_STATE persisted_counter:", state["persisted_counter"])
-    print("GET_STATE security_mode   :", state["security_mode"])
+    print("GET_STATE replay_protection_mode :", state["replay_protection_mode"])
     if state["runtime_counter"] < counter3:
         raise SystemExit("GET_STATE runtime counter is behind last signature")
 

@@ -9,8 +9,8 @@ from host_protocol import (
     CMD_SIGN,
     DOMAIN_SUDO,
     REQ_VERSION,
-    SECURITY_MODE_BETA,
-    SECURITY_MODE_STRICT,
+    REPLAY_PROTECTION_MODE_DEV,
+    REPLAY_PROTECTION_MODE_STRICT,
     STATUS_NOT_PROVISIONED,
     STATUS_OK,
     STATUS_PROVISIONING_LOCKED,
@@ -31,8 +31,8 @@ class TokenSim:
         self.master_secret = None
 
     @property
-    def security_mode(self) -> int:
-        return SECURITY_MODE_STRICT if self.flush_interval <= 1 else SECURITY_MODE_BETA
+    def replay_protection_mode(self) -> int:
+        return REPLAY_PROTECTION_MODE_STRICT if self.flush_interval <= 1 else REPLAY_PROTECTION_MODE_DEV
 
     @property
     def provisioned(self) -> bool:
@@ -94,7 +94,7 @@ class TokenSim:
         if self.runtime_counter != self.persisted_counter:
             flags |= 0x02
         resp[6] = flags
-        resp[7] = self.security_mode
+        resp[7] = self.replay_protection_mode
         resp[8:12] = self.runtime_counter.to_bytes(4, "little")
         resp[12:16] = self.persisted_counter.to_bytes(4, "little")
         resp[16:20] = self.generation.to_bytes(4, "little")
@@ -112,13 +112,13 @@ class ProtocolTests(unittest.TestCase):
         resp = token.sign(os.urandom(32))
         self.assertEqual(resp[1], STATUS_NOT_PROVISIONED)
 
-    def test_provision_sign_get_state_beta(self) -> None:
+    def test_provision_sign_get_state_dev(self) -> None:
         token = TokenSim(self.UID_HEX, flush_interval=64)
         self.assertEqual(token.provision(self.SECRET_A)[1], STATUS_OK)
         sign_resp = token.sign(os.urandom(32))
         self.assertEqual(sign_resp[1], STATUS_OK)
         state = parse_get_state_response(token.get_state())
-        self.assertEqual(state["security_mode"], SECURITY_MODE_BETA)
+        self.assertEqual(state["replay_protection_mode"], REPLAY_PROTECTION_MODE_DEV)
         self.assertTrue(state["master_provisioned"])
         self.assertTrue(state["provisioning_locked"])
         self.assertTrue(state["secret_loaded"])
@@ -164,7 +164,7 @@ class ProtocolTests(unittest.TestCase):
         token.provision(self.SECRET_A)
         token.sign(os.urandom(32))
         state = parse_get_state_response(token.get_state())
-        self.assertEqual(state["security_mode"], SECURITY_MODE_STRICT)
+        self.assertEqual(state["replay_protection_mode"], REPLAY_PROTECTION_MODE_STRICT)
         self.assertEqual(state["runtime_counter"], state["persisted_counter"])
 
     def test_reprovision_is_locked_until_wipe(self) -> None:
