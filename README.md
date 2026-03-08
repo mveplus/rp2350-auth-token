@@ -96,6 +96,7 @@ RP2350 HID Token
    |
    v
 64-byte HID response
+```
 
 ## Scripts
 
