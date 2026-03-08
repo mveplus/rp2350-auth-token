@@ -21,8 +21,6 @@ jobs:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install build dependencies
         run: |
@@ -47,21 +45,11 @@ jobs:
         run: cmake --build build_beta
 
       - name: Prepare release assets
-        id: assets
         run: |
           mkdir -p dist
-          UF2_PATH="dist/rp2350_token-${RELEASE_TAG}-dev.uf2"
-          ELF_PATH="dist/rp2350_token-${RELEASE_TAG}-dev.elf"
-          SHA_PATH="dist/SHA256SUMS.txt"
-          cp build_beta/rp2350_token.uf2 "$UF2_PATH"
-          cp build_beta/rp2350_token.elf "$ELF_PATH"
+          cp build_beta/rp2350_token.uf2 "dist/rp2350_token-${RELEASE_TAG}-dev.uf2"
+          cp build_beta/rp2350_token.elf "dist/rp2350_token-${RELEASE_TAG}-dev.elf"
           sha256sum dist/* > dist/SHA256SUMS.txt
-          echo "uf2_path=$UF2_PATH" >> "$GITHUB_OUTPUT"
-          echo "elf_path=$ELF_PATH" >> "$GITHUB_OUTPUT"
-          echo "sha_path=$SHA_PATH" >> "$GITHUB_OUTPUT"
-
-      - name: Show packaged assets
-        run: ls -l dist
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
@@ -69,9 +57,8 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TAG }}
           files: |
-            ${{ steps.assets.outputs.uf2_path }}
-            ${{ steps.assets.outputs.elf_path }}
-            ${{ steps.assets.outputs.sha_path }}
+            dist/rp2350_token-*-dev.uf2
+            dist/rp2350_token-*-dev.elf
+            dist/SHA256SUMS.txt
           generate_release_notes: true
           prerelease: true
-          fail_on_unmatched_files: true
